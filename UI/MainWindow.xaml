@@ -1,0 +1,21 @@
+<Window x:Class="UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Model Viewer">
+    <Grid>
+        <!-- DX12 渲染面板（最底層） -->
+        <SwapChainPanel x:Name="RenderPanel"
+                        Loaded="RenderPanel_Loaded"
+                        SizeChanged="RenderPanel_SizeChanged"
+                        Unloaded="RenderPanel_Unloaded"/>
+
+        <!-- UI 覆蓋層（之後加工具列等） -->
+        <TextBlock Text="DX12 Ready ✓"
+                   Foreground="White"
+                   Margin="16"
+                   VerticalAlignment="Top"
+                   HorizontalAlignment="Left"
+                   FontSize="14"
+                   x:Name="StatusText"/>
+    </Grid>
+</Window>
