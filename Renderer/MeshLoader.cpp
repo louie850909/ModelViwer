@@ -61,6 +61,28 @@ std::shared_ptr<Mesh> MeshLoader::LoadViaAssimp(const std::string& path) {
         //記錄這個 aiMesh 使用哪個材質
         sub.materialIndex = aiM->mMaterialIndex;
 
+        // --------- Assimp 的半透明判斷邏輯 ---------
+        if (aiM->mMaterialIndex >= 0) {
+            aiMaterial* mat = scene->mMaterials[aiM->mMaterialIndex];
+
+            // 條件 1：檢查整體的「不透明度 (Opacity)」數值 (1.0 = 完全不透明)
+            float opacity = 1.0f;
+            mat->Get(AI_MATKEY_OPACITY, opacity);
+
+            // 條件 2：檢查是否有綁定「透明度貼圖 (Opacity Map)」
+            bool hasOpacityTexture = (mat->GetTextureCount(aiTextureType_OPACITY) > 0);
+
+            // 條件 3：某些舊版 OBJ 格式會把透明貼圖當作 DISPLACEMENT 或 SHININESS 傳入，
+            // 但最正規的做法是檢查 Diffuse 貼圖是否本身就被標記為帶有 Alpha
+            // (為了保險起見，只要滿足條件 1 或條件 2，我們就視為半透明)
+
+            sub.isTransparent = (opacity < 1.0f) || hasOpacityTexture;
+        }
+        else {
+            sub.isTransparent = false;
+        }
+        // --------------------------------------------------
+
         // 紀錄這個 aiMesh 在全局頂點陣列中的起始位置
         UINT vertexOffset = (UINT)mesh->vertices.size();
 
