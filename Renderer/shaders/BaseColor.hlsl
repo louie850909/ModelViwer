@@ -39,6 +39,7 @@ float4 PSMain(VSOut v) : SV_TARGET
 {
     // 1. 採樣貼圖
     float4 texColor = g_texture.Sample(g_sampler, v.uv);
+    clip(texColor.a - 0.5f);
     // 2. 計算世界空間法線
     float3 worldNormal = normalize(mul((float3x3) normalMatrix, v.normal));
     

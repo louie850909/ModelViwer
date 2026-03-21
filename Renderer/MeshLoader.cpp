@@ -182,6 +182,7 @@ std::shared_ptr<Mesh> MeshLoader::LoadGltf(const std::string& path) {
 
             // 記錄這個子網格使用哪個材質
             sub.materialIndex = prim.material;
+			sub.isTransparent = (prim.material >= 0 && model.materials[prim.material].alphaMode == "BLEND");
 
             auto& idxAcc = model.accessors[prim.indices];
             auto& idxView = model.bufferViews[idxAcc.bufferView];

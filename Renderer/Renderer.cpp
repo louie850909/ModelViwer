@@ -135,7 +135,7 @@ void Renderer::RenderFrame() {
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
     m_cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    if (m_mesh && m_pso) {
+    if (m_mesh) {
         using namespace DirectX;
 
         // 模型保持靜止不動
@@ -171,8 +171,6 @@ void Renderer::RenderFrame() {
         m_cmdList->RSSetViewports(1, &vp);
         m_cmdList->RSSetScissorRects(1, &sc);
         m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        // 繪製
-        m_cmdList->SetPipelineState(m_pso.Get());
         m_cmdList->SetGraphicsRootSignature(m_rootSig.Get());
 
         m_cmdList->SetGraphicsRootConstantBufferView(0, m_cbuffer->GetGPUVirtualAddress());
@@ -184,23 +182,35 @@ void Renderer::RenderFrame() {
         ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
         m_cmdList->SetDescriptorHeaps(1, heaps);
 
-        // 迴圈遍歷所有子網格，分批 Draw Call！
-        for (const auto& sub : m_mesh->subMeshes) {
+        // ==========================================
+        // Pass 1: 先畫所有「不透明」的物件
+        // ==========================================
+        m_cmdList->SetPipelineState(m_psoOpaque.Get());
 
-            // 防呆：確保材質索引合法
+        for (const auto& sub : m_mesh->subMeshes) {
+            if (sub.isTransparent) continue; // 是透明的就跳過，晚點畫
+
             int matIdx = sub.materialIndex;
             if (matIdx < 0 || matIdx >= m_mesh->texturePaths.size()) matIdx = 0;
 
-            // 1. 計算這張貼圖在 Descriptor Heap 中的位移量
-            CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(
-                m_srvHeap->GetGPUDescriptorHandleForHeapStart(),
-                matIdx,
-                m_srvDescriptorSize);
-
-            // 2. 告訴 Shader：「接下來要畫的東西，請用這個位置的貼圖」 (Root Parameter Index 1 對應 t0)
+            CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx, m_srvDescriptorSize);
             m_cmdList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
+            m_cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
+        }
 
-            // 3. 繪製這個子網格
+        // ==========================================
+        // Pass 2: 再畫所有「半透明」的物件
+        // ==========================================
+        m_cmdList->SetPipelineState(m_psoTransparent.Get());
+
+        for (const auto& sub : m_mesh->subMeshes) {
+            if (!sub.isTransparent) continue; // 不透明的剛剛畫過了，跳過
+
+            int matIdx = sub.materialIndex;
+            if (matIdx < 0 || matIdx >= m_mesh->texturePaths.size()) matIdx = 0;
+
+            CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx, m_srvDescriptorSize);
+            m_cmdList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
             m_cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
         }
     }
@@ -326,23 +336,48 @@ void Renderer::CreateRootSignatureAndPSO() {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.InputLayout = { layout, _countof(layout) };
     psoDesc.pRootSignature = m_rootSig.Get();
-    psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
-    psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
+    psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+    psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+
+	// 大部分狀態使用預設值，只有幾個需要特別設定
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 
-    psoDesc.DepthStencilState.DepthEnable = TRUE;
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
+	// 關鍵：不透明和半透明物件都要開啟 Depth Test，才能正確遮擋
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.SampleDesc = { 1, 0 };
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count = 1;
 
-    m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso));
+    // ==========================================
+    // 1. 建立「不透明 (Opaque)」PSO
+    // ==========================================
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT); // 關閉混合
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL; // 開啟深度寫入
+    CHECK(m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_psoOpaque)));
+
+    // ==========================================
+    // 2. 建立「半透明 (Transparent)」PSO
+    // ==========================================
+    D3D12_BLEND_DESC blendDesc = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.BlendState = blendDesc;
+
+    // 關鍵：半透明物件絕對不能寫入 Depth Buffer！否則會遮擋後方的半透明物
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+
+    CHECK(m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_psoTransparent)));
 
     // Constant Buffer（256 byte aligned）
     auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);

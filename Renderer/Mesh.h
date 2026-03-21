@@ -13,6 +13,7 @@ struct SubMesh {
     UINT indexOffset;
     UINT indexCount;
     int  materialIndex = -1;
+    bool isTransparent = false;
 };
 
 struct Mesh {
