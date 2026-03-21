@@ -302,7 +302,8 @@ void Renderer::CreateRootSignatureAndPSO() {
     rootParameters[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL); // 對應 t0
 
     // 3. 建立一個預設的靜態採樣器 (s0)
-    CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+    CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_ANISOTROPIC);
+    sampler.MaxAnisotropy = 16;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -482,26 +483,72 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh) {
             pixels = (stbi_uc*)&defaultWhite; // 防呆：給它 1x1 像素的白圖
         }
 
-        // 建立 GPU Texture2D
-        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, texW, texH);
+        // 計算這張貼圖需要幾層 Mipmap (不斷除以 2 直到 1x1)
+        UINT mipLevels = 1;
+        UINT tempW = texW, tempH = texH;
+        while (tempW > 1 || tempH > 1) {
+            mipLevels++;
+            tempW = (std::max)(1u, tempW / 2);
+            tempH = (std::max)(1u, tempH / 2);
+        }
+
+        // 建立 GPU Texture2D (將 MipLevels 從 1 改為我們算出的層數)
+        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, texW, texH, 1, (UINT16)mipLevels);
         auto defaultHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         m_device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_textures[i]));
 
-        // 建立 Upload Buffer
+        // 建立 Upload Buffer (要能裝得下所有 Mipmap 層級)
         UINT64 uploadSize;
-        m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
+        m_device->GetCopyableFootprints(&texDesc, 0, mipLevels, 0, nullptr, nullptr, nullptr, &uploadSize);
         auto uploadHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
         m_device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffers[i]));
 
-        // 複製像素資料
-        D3D12_SUBRESOURCE_DATA texData = {};
-        texData.pData = pixels;
-        texData.RowPitch = texW * 4;
-        texData.SlicePitch = texData.RowPitch * texH;
-        UpdateSubresources(m_cmdList.Get(), m_textures[i].Get(), uploadBuffers[i].Get(), 0, 0, 1, &texData);
+        // 在 CPU 端動態計算並產生每一層的 Mipmap 像素資料
+        std::vector<std::vector<uint8_t>> mipData(mipLevels);
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources(mipLevels);
+
+        // 第 0 層 (原始最高畫質)
+        mipData[0].assign(pixels, pixels + (texW * texH * 4));
+        subresources[0].pData = mipData[0].data();
+        subresources[0].RowPitch = texW * 4;
+        subresources[0].SlicePitch = subresources[0].RowPitch * texH;
+
+        // 第 1 ~ N 層 (透過 2x2 Box Filter 模糊降採樣)
+        UINT currW = texW, currH = texH;
+        for (UINT m = 1; m < mipLevels; m++) {
+            UINT prevW = currW; UINT prevH = currH;
+            currW = (std::max)(1u, currW / 2);
+            currH = (std::max)(1u, currH / 2);
+
+            mipData[m].resize(currW * currH * 4);
+            const uint8_t* src = mipData[m - 1].data();
+            uint8_t* dst = mipData[m].data();
+
+            for (UINT y = 0; y < currH; y++) {
+                for (UINT x = 0; x < currW; x++) {
+                    UINT sx = x * 2; UINT sy = y * 2;
+                    UINT sx1 = (std::min)(sx + 1, prevW - 1);
+                    UINT sy1 = (std::min)(sy + 1, prevH - 1);
+
+                    for (int c = 0; c < 4; c++) { // RGBA 通道混合
+                        int p00 = src[(sy * prevW + sx) * 4 + c];
+                        int p10 = src[(sy * prevW + sx1) * 4 + c];
+                        int p01 = src[(sy1 * prevW + sx) * 4 + c];
+                        int p11 = src[(sy1 * prevW + sx1) * 4 + c];
+                        dst[(y * currW + x) * 4 + c] = (p00 + p10 + p01 + p11) / 4;
+                    }
+                }
+            }
+            subresources[m].pData = mipData[m].data();
+            subresources[m].RowPitch = currW * 4;
+            subresources[m].SlicePitch = subresources[m].RowPitch * currH;
+        }
+
+        // 一口氣將所有 Mipmap 層級上傳到 GPU
+        UpdateSubresources(m_cmdList.Get(), m_textures[i].Get(), uploadBuffers[i].Get(), 0, 0, mipLevels, subresources.data());
 
         // 轉為 Shader 資源
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_textures[i].Get(),
@@ -513,7 +560,7 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh) {
         srvViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvViewDesc.Format = texDesc.Format;
         srvViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvViewDesc.Texture2D.MipLevels = 1;
+        srvViewDesc.Texture2D.MipLevels = mipLevels;
         m_device->CreateShaderResourceView(m_textures[i].Get(), &srvViewDesc, srvHandle);
 
         // 指標往下移動到下一個空位
