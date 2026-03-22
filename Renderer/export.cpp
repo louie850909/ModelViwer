@@ -40,10 +40,20 @@ extern "C" {
     }
 
     __declspec(dllexport) bool Renderer_LoadModel(const char* path) {
-        auto mesh = MeshLoader::Load(path);
-        if (!mesh) return false;
-        g_renderer.UploadMeshToGpu(mesh);
-        return true;
+        // 必須先將字元指標拷貝成 std::string，避免離開此作用域後 path 指標失效
+        std::string filePath(path);
+
+        // 啟動背景執行緒處理載入
+        std::thread([filePath]() {
+            // 1. 這裡包含 Assimp / glTF 的硬碟讀取與解析 (極度耗時)
+            auto mesh = MeshLoader::Load(filePath);
+            if (mesh) {
+                // 2. 這裡處理圖片解碼與 GPU 資源建立
+                g_renderer.UploadMeshToGpu(mesh);
+            }
+            }).detach(); // 放飛執行緒，不阻塞當前呼叫
+
+        return true; // 立即回傳給 C#，UI 不會凍結
     }
 
     __declspec(dllexport) void Renderer_SetCameraTransform(float px, float py, float pz, float pitch, float yaw) {

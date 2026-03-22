@@ -247,12 +247,12 @@ void Renderer::RenderFrame() {
     m_cmdList->ResourceBarrier(1, &barrier);
     m_cmdList->Close();
 
-    // 指令錄製完畢，立刻解鎖！放開 UI 執行緒！
-    m_renderMutex.unlock();
-
-    // 與 GPU 溝通、等待的超耗時動作，絕對不可以拿著鎖做
+    // 必須先 Execute，才能 Unlock！
     ID3D12CommandList* lists[] = { m_cmdList.Get() };
     m_cmdQueue->ExecuteCommandLists(1, lists);
+
+    // 指令已經安全送進 Queue 了，現在解鎖是安全的
+    m_renderMutex.unlock();
     m_swapChain->Present(1, 0);
 
     //1. 推進全域 Fence 計數器，並要求 GPU 執行到這裡時發出信號
@@ -414,11 +414,86 @@ void Renderer::CreateRootSignatureAndPSO() {
 }
 
 void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh) {
-    std::lock_guard<std::mutex> lock(m_renderMutex);
+    // CPU 處理好的圖片像素
+    struct TextureCpuData {
+        int width, height;
+        UINT mipLevels;
+        std::vector<std::vector<uint8_t>> mipData;
+    };
 
+    // ==========================================
+    // [CPU 階段] 無鎖背景處理：解碼貼圖與生成 Mipmap
+    // 在這裡 Render Thread 依然可以繼續畫舊的模型，完全不卡頓！
+    // ==========================================
+
+    // 定義一個 Lambda 專門處理純 CPU 的讀圖與降取樣運算
+    auto PrepareTextureData = [](const std::string& path, uint32_t defaultColor) -> TextureCpuData {
+        TextureCpuData data;
+        int texChannels = 4;
+        stbi_uc* pixels = path.empty() ? nullptr : stbi_load(path.c_str(), &data.width, &data.height, &texChannels, 4);
+
+        if (!pixels) {
+            data.width = 1; data.height = 1;
+            pixels = (stbi_uc*)&defaultColor;
+        }
+
+        data.mipLevels = 1;
+        UINT tempW = data.width, tempH = data.height;
+        while (tempW > 1 || tempH > 1) {
+            data.mipLevels++;
+            tempW = (std::max)(1u, tempW / 2);
+            tempH = (std::max)(1u, tempH / 2);
+        }
+
+        data.mipData.resize(data.mipLevels);
+        data.mipData[0].assign(pixels, pixels + (data.width * data.height * 4));
+
+        UINT currW = data.width, currH = data.height;
+        for (UINT m = 1; m < data.mipLevels; ++m) {
+            UINT prevW = currW, prevH = currH;
+            currW = (std::max)(1u, currW / 2);
+            currH = (std::max)(1u, currH / 2);
+            data.mipData[m].resize(currW * currH * 4);
+            const uint8_t* src = data.mipData[m - 1].data();
+            uint8_t* dst = data.mipData[m].data();
+            for (UINT y = 0; y < currH; ++y) {
+                for (UINT x = 0; x < currW; ++x) {
+                    UINT sx = x * 2, sy = y * 2;
+                    UINT sx1 = (std::min)(sx + 1, prevW - 1);
+                    UINT sy1 = (std::min)(sy + 1, prevH - 1);
+                    for (int c = 0; c < 4; ++c) {
+                        int p00 = src[(sy * prevW + sx) * 4 + c];
+                        int p10 = src[(sy * prevW + sx1) * 4 + c];
+                        int p01 = src[(sy1 * prevW + sx) * 4 + c];
+                        int p11 = src[(sy1 * prevW + sx1) * 4 + c];
+                        dst[(y * currW + x) * 4 + c] = (p00 + p10 + p01 + p11) / 4;
+                    }
+                }
+            }
+        }
+        if (pixels != (stbi_uc*)&defaultColor) stbi_image_free(pixels);
+        return data;
+        };
+
+    UINT numMaterials = (std::max)(1, (int)mesh->texturePaths.size());
+    std::vector<TextureCpuData> baseColors(numMaterials);
+    std::vector<TextureCpuData> metallicRoughness(numMaterials);
+
+    // 平行或依序在 CPU 準備好所有圖片像素
+    for (size_t i = 0; i < numMaterials; i++) {
+        baseColors[i] = PrepareTextureData(mesh->texturePaths[i], 0xFFFFFFFF);
+        metallicRoughness[i] = PrepareTextureData(mesh->metallicRoughnessPaths[i], 0xFF00FF00);
+    }
+
+    // ==========================================
+    // [GPU 階段] 上鎖並交給 DX12 建立資源
+    // 這裡只剩下單純的記憶體拷貝與 DX12 API 呼叫，速度極快
+    // ==========================================
+    std::lock_guard<std::mutex> lock(m_renderMutex);
     WaitForGpu();
 
     m_mesh = mesh;
+
     auto uploadHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     auto defaultHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 
@@ -474,14 +549,14 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh) {
 
     // 取得 SRV Descriptor 的大小 (DX12 規定必須動態查詢)
     m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // 👇 Heap 數量加倍 (每個材質 2 張圖：t0=BaseColor, t1=MR)
-    UINT numMaterials = (std::max)(1, (int)mesh->texturePaths.size());
+    // 每個材質需要 2 個位置 (BaseColor + MetallicRoughness)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = numMaterials * 2;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    CHECK(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)));
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // 必須設定為 Shader 可見
+    if (FAILED(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)))) {
+        throw std::runtime_error("Failed to create SRV Heap");
+    }
 
     m_textures.clear();
     std::vector<ComPtr<ID3D12Resource>> uploadBuffers; // 暫存區
@@ -490,107 +565,55 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh) {
     m_cmdList->Reset(m_cmdAllocators[0].Get(), nullptr);
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(m_srvHeap->GetCPUDescriptorHandleForHeapStart());
 
-    // 定義一個 Lambda 輔助函式，專門處理「讀取、產 Mipmap、建 SRV」
-    auto LoadTextureToGPU = [&](const std::string& path, uint32_t defaultColor) {
-        int texW = 1, texH = 1, texChannels = 4;
-        stbi_uc* pixels = path.empty() ? nullptr : stbi_load(path.c_str(), &texW, &texH, &texChannels, 4);
-        if (!pixels) pixels = (stbi_uc*)&defaultColor;
-
-        UINT mipLevels = 1;
-        UINT tempW = texW, tempH = texH;
-        while (tempW > 1 || tempH > 1) {
-            mipLevels++;
-            tempW = (std::max)(1u, tempW / 2);
-            tempH = (std::max)(1u, tempH / 2);
-        }
-
-        // push new entries
+    // 定義新的 Lambda，這時候只負責把剛才算好的 TextureCpuData 餵給 GPU
+    auto UploadToGPU = [&](const TextureCpuData& cpuData) {
         m_textures.emplace_back();
         uploadBuffers.emplace_back();
 
-        // GPU テクスチャ作成
-        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, texW, texH, 1, (UINT16)mipLevels);
+        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, cpuData.width, cpuData.height, 1, (UINT16)cpuData.mipLevels);
         auto defaultHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-        CHECK(m_device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_textures.back())));
+        m_device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_textures.back()));
 
-        // Upload Buffer 作成
         UINT64 uploadSize = 0;
-        m_device->GetCopyableFootprints(&texDesc, 0, mipLevels, 0, nullptr, nullptr, nullptr, &uploadSize);
+        m_device->GetCopyableFootprints(&texDesc, 0, cpuData.mipLevels, 0, nullptr, nullptr, nullptr, &uploadSize);
         auto uploadHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-        CHECK(m_device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffers.back())));
+        m_device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffers.back()));
 
-        // CPU 側で MIP を生成して subresources を用意
-        std::vector<std::vector<uint8_t>> mipData(mipLevels);
-        std::vector<D3D12_SUBRESOURCE_DATA> subresources(mipLevels);
-        mipData[0].assign(pixels, pixels + (texW * texH * 4));
-        subresources[0].pData = mipData[0].data();
-        subresources[0].RowPitch = texW * 4;
-        subresources[0].SlicePitch = subresources[0].RowPitch * texH;
-
-        UINT currW = texW, currH = texH;
-        for (UINT m = 1; m < mipLevels; ++m) {
-            UINT prevW = currW, prevH = currH;
-            currW = (std::max)(1u, currW / 2);
-            currH = (std::max)(1u, currH / 2);
-            mipData[m].resize(currW * currH * 4);
-            const uint8_t* src = mipData[m - 1].data();
-            uint8_t* dst = mipData[m].data();
-            for (UINT y = 0; y < currH; ++y) {
-                for (UINT x = 0; x < currW; ++x) {
-                    UINT sx = x * 2, sy = y * 2;
-                    UINT sx1 = (std::min)(sx + 1, prevW - 1);
-                    UINT sy1 = (std::min)(sy + 1, prevH - 1);
-                    for (int c = 0; c < 4; ++c) {
-                        int p00 = src[(sy * prevW + sx) * 4 + c];
-                        int p10 = src[(sy * prevW + sx1) * 4 + c];
-                        int p01 = src[(sy1 * prevW + sx) * 4 + c];
-                        int p11 = src[(sy1 * prevW + sx1) * 4 + c];
-                        dst[(y * currW + x) * 4 + c] = (p00 + p10 + p01 + p11) / 4;
-                    }
-                }
-            }
-            subresources[m].pData = mipData[m].data();
-            subresources[m].RowPitch = currW * 4;
-            subresources[m].SlicePitch = subresources[m].RowPitch * currH;
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources(cpuData.mipLevels);
+        for (UINT m = 0; m < cpuData.mipLevels; ++m) {
+            subresources[m].pData = cpuData.mipData[m].data();
+            // 注意這裡要根據當下 mip 層級的寬度計算 RowPitch
+            UINT currentW = (std::max)(1u, (UINT)(cpuData.width >> m));
+            UINT currentH = (std::max)(1u, (UINT)(cpuData.height >> m));
+            subresources[m].RowPitch = currentW * 4;
+            subresources[m].SlicePitch = subresources[m].RowPitch * currentH;
         }
 
-        // Upload 実行
-        UpdateSubresources(m_cmdList.Get(), m_textures.back().Get(), uploadBuffers.back().Get(), 0, 0, mipLevels, subresources.data());
+        UpdateSubresources(m_cmdList.Get(), m_textures.back().Get(), uploadBuffers.back().Get(), 0, 0, cpuData.mipLevels, subresources.data());
 
-        // 状態遷移 & SRV 作成
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_textures.back().Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_textures.back().Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         m_cmdList->ResourceBarrier(1, &barrier);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvViewDesc = {};
         srvViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvViewDesc.Format = texDesc.Format;
         srvViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvViewDesc.Texture2D.MipLevels = mipLevels;
+        srvViewDesc.Texture2D.MipLevels = cpuData.mipLevels;
         m_device->CreateShaderResourceView(m_textures.back().Get(), &srvViewDesc, srvHandle);
         srvHandle.Offset(1, m_srvDescriptorSize);
+        };
 
-        if (pixels != (stbi_uc*)&defaultColor) stbi_image_free(pixels);
-    };
-
-    // 遍歷所有材質，依序載入 t0 和 t1
+    // 依序上傳 BaseColor 與 MetallicRoughness
     for (size_t i = 0; i < numMaterials; i++) {
-        // 1. 載入 BaseColor (預設純白 0xFFFFFFFF)
-        LoadTextureToGPU(mesh->texturePaths[i], 0xFFFFFFFF);
-
-        // 2. 載入 MetallicRoughness (預設：金屬度 0, 粗糙度 1.0 -> 綠色通道滿)
-        // Little Endian RGBA 中，Roughness=1.0(G=255), Metallic=0.0(B=0) => 0xFF00FF00
-        LoadTextureToGPU(mesh->metallicRoughnessPaths[i], 0xFF00FF00);
+        UploadToGPU(baseColors[i]);
+        UploadToGPU(metallicRoughness[i]);
     }
 
-    // 送出所有搬運指令
     m_cmdList->Close();
     ID3D12CommandList* cmds[] = { m_cmdList.Get() };
     m_cmdQueue->ExecuteCommandLists(1, cmds);
-    WaitForGpu(); // 等待所有貼圖上傳完畢 (離開函式後 uploadBuffers 會自動銷毀)
+    WaitForGpu();
 }
 
 void Renderer::CreateDSV() {
