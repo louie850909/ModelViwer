@@ -28,12 +28,18 @@ public sealed partial class MainWindow : Window
     private bool _isFPSLooking = false;
     private Windows.Foundation.Point _lastMousePos;
 
+    // [極度重要] 宣告一個類別層級的變數來抓住 Delegate，避免被 GC 回收！
+    private RenderBridge.LoadCallback _loadCallback;
+
     public MainWindow()
     {
         InitializeComponent();
 
         // 註冊類似 Unity Update() 的每幀更新事件
         CompositionTarget.Rendering += GameLoop_Update;
+
+        // 初始化這個 Delegate，指派給我們寫好的方法
+        _loadCallback = new RenderBridge.LoadCallback(OnModelLoaded);
     }
 
     // ==========================================
@@ -148,7 +154,25 @@ public sealed partial class MainWindow : Window
 
         var file = await picker.PickSingleFileAsync();
         if (file != null)
-            RenderBridge.Renderer_LoadModel(file.Path);
+        {
+            // 選好檔案了！開啟載入遮罩
+            LoadingOverlay.Visibility = Visibility.Visible;
+
+            // 呼叫 C++ 載入，並把 Delegate 傳過去
+            RenderBridge.Renderer_LoadModel(file.Path, _loadCallback);
+        }
+    }
+
+    // 當載入完成時，會觸發這個方法
+    private void OnModelLoaded()
+    {
+        // 因為這個呼叫來自 C++ 的背景 thread，
+        // 必須透過 DispatcherQueue 排程回 WinUI 3 的主執行緒才能更新畫面
+        this.DispatcherQueue.TryEnqueue(() =>
+        {
+            // 關閉載入遮罩
+            LoadingOverlay.Visibility = Visibility.Collapsed;
+        });
     }
 
     // ==========================================

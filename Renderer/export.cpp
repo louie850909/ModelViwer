@@ -13,6 +13,8 @@ static std::atomic<int>  g_newH{ 0 }; // 改為 atomic
 
 extern "C" {
 
+    typedef void (*LoadCallback)();
+
     __declspec(dllexport) bool Renderer_Init(IUnknown* panelUnknown, int width, int height) {
         if (!g_renderer.Init(panelUnknown, width, height)) return false;
         g_running = true;
@@ -39,21 +41,23 @@ extern "C" {
         g_renderer.Shutdown();
     }
 
-    __declspec(dllexport) bool Renderer_LoadModel(const char* path) {
-        // 必須先將字元指標拷貝成 std::string，避免離開此作用域後 path 指標失效
+    __declspec(dllexport) bool Renderer_LoadModel(const char* path, LoadCallback callback) {
         std::string filePath(path);
 
         // 啟動背景執行緒處理載入
-        std::thread([filePath]() {
-            // 1. 這裡包含 Assimp / glTF 的硬碟讀取與解析 (極度耗時)
+        std::thread([filePath, callback]() {
             auto mesh = MeshLoader::Load(filePath);
             if (mesh) {
-                // 2. 這裡處理圖片解碼與 GPU 資源建立
                 g_renderer.UploadMeshToGpu(mesh);
             }
-            }).detach(); // 放飛執行緒，不阻塞當前呼叫
 
-        return true; // 立即回傳給 C#，UI 不會凍結
+            // 載入與 GPU 上傳全部完成後，呼叫 C# 傳進來的 Callback
+            if (callback) {
+                callback();
+            }
+            }).detach();
+
+        return true;
     }
 
     __declspec(dllexport) void Renderer_SetCameraTransform(float px, float py, float pz, float pitch, float yaw) {

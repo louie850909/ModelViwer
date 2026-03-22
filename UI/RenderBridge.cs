@@ -13,8 +13,12 @@ internal static class RenderBridge
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern void Renderer_Resize(int width, int height);
 
+    // 宣告與 C++ 對應的委派 (Delegate)，必須標註 Cdecl 呼叫慣例
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void LoadCallback();
+
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
-    public static extern bool Renderer_LoadModel([MarshalAs(UnmanagedType.LPStr)] string path);
+    public static extern bool Renderer_LoadModel([MarshalAs(UnmanagedType.LPStr)] string path, LoadCallback callback);
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern void Renderer_Shutdown();
