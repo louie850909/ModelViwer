@@ -50,4 +50,10 @@ extern "C" {
         g_renderer.SetCameraTransform(px, py, pz, pitch, yaw);
     }
 
+    __declspec(dllexport) void Renderer_GetStats(int* vertices, int* polygons, int* drawCalls, float* frameTimeMs) {
+        if (vertices && polygons && drawCalls && frameTimeMs) {
+            g_renderer.GetStats(*vertices, *polygons, *drawCalls, *frameTimeMs);
+        }
+    }
+
 } // extern "C"

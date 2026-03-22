@@ -14,13 +14,18 @@
                         PointerWheelChanged="RenderPanel_PointerWheelChanged"/>
 
         <!-- UI 覆蓋層（之後加工具列等） -->
-        <TextBlock Text="DX12 Ready ✓"
-                   Foreground="White"
-                   Margin="16"
-                   VerticalAlignment="Top"
-                   HorizontalAlignment="Left"
-                   FontSize="14"
-                   x:Name="StatusText"/>
+        <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Margin="16" IsHitTestVisible="False">
+            <TextBlock Text="DX12 Ready ✓"
+                       Foreground="White"
+                       FontSize="14"
+                       x:Name="StatusText"/>
+
+            <TextBlock x:Name="StatsText"
+                       Foreground="#FF00FF00"
+                       FontSize="13"
+                       Margin="0,4,0,0"
+                       FontFamily="Consolas" />
+        </StackPanel>
         <Button Content="開啟模型" Click="OpenModel_Click"
         VerticalAlignment="Top" HorizontalAlignment="Right"
         Margin="16" />

@@ -21,4 +21,7 @@ internal static class RenderBridge
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern void Renderer_SetCameraTransform(float px, float py, float pz, float pitch, float yaw);
+
+    [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Renderer_GetStats(out int vertices, out int polygons, out int drawCalls, out float frameTimeMs);
 }

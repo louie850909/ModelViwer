@@ -70,6 +70,15 @@ public sealed partial class MainWindow : Window
 
         // 每幀將最終狀態送到 C++ (C++ 變回一個單純的繪圖工人)
         RenderBridge.Renderer_SetCameraTransform(_cameraPos.X, _cameraPos.Y, _cameraPos.Z, _pitch, _yaw);
+
+        // ---取得並顯示效能數據 ---
+        RenderBridge.Renderer_GetStats(out int v, out int p, out int dc, out float ft);
+
+        // 使用 N0 格式化數字，自動加上千位數逗號，方便閱讀大型模型數據
+        StatsText.Text = $"Frame Time : {ft:F2} ms\n" +
+                         $"Vertices   : {v:N0}\n" +
+                         $"Polygons   : {p:N0}\n" +
+                         $"Draw Calls : {dc}";
     }
 
     private bool IsKeyPressed(VirtualKey key)

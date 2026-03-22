@@ -47,6 +47,7 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         CreateRootSignatureAndPSO();   // 6. RootSignature + PSO + CBuffer
         //    （需要 Device 已建立，故放最後）
 
+        m_lastFrameTime = std::chrono::high_resolution_clock::now(); // 初始化計時器
         return true;
     }
     catch (...) { return false; }
@@ -110,6 +111,14 @@ void Renderer::CreateRTV() {
 }
 
 void Renderer::RenderFrame() {
+    // 計算 Frame Time (毫秒)
+    auto now = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<float, std::milli> timeSpan = now - m_lastFrameTime;
+    m_lastFrameTime = now;
+    m_statFrameTime.store(timeSpan.count(), std::memory_order_relaxed);
+
+    int currentDrawCalls = 0; // 用來累加當前幀的 DrawCall
+
     // 手動上鎖：保護 m_yaw, m_pitch, m_mesh 等變數的讀取
     m_renderMutex.lock();
 
@@ -198,6 +207,7 @@ void Renderer::RenderFrame() {
             CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx * 2, m_srvDescriptorSize);
             m_cmdList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
             m_cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
+            currentDrawCalls++; // 紀錄 DrawCall
         }
 
         // ==========================================
@@ -215,8 +225,19 @@ void Renderer::RenderFrame() {
             CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx * 2, m_srvDescriptorSize);
             m_cmdList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
             m_cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
+            currentDrawCalls++; // 紀錄 DrawCall
         }
+
+        m_statVertices.store((int)m_mesh->vertices.size(), std::memory_order_relaxed);
+        m_statPolygons.store((int)m_mesh->indices.size() / 3, std::memory_order_relaxed);
     }
+    else
+    {
+        m_statVertices.store(0, std::memory_order_relaxed);
+        m_statPolygons.store(0, std::memory_order_relaxed);
+    }
+
+    m_statDrawCalls.store(currentDrawCalls, std::memory_order_relaxed); // 寫入總 DrawCall
 
     // Barrier: RenderTarget → Present
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(

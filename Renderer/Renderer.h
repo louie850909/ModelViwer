@@ -3,6 +3,8 @@
 #include "Mesh.h"
 #include <memory>
 #include <mutex>
+#include <atomic>
+#include <chrono>
 
 // 對應 shader 的 cbuffer 結構
 struct SceneConstants {
@@ -24,6 +26,12 @@ public:
     void Shutdown();
     void UploadMeshToGpu(std::shared_ptr<Mesh> mesh); // ← 供 exports.cpp 呼叫
     void SetCameraTransform(float px, float py, float pz, float pitch, float yaw);
+    void GetStats(int& vertices, int& polygons, int& drawCalls, float& frameTimeMs) {
+        vertices = m_statVertices.load(std::memory_order_relaxed);
+        polygons = m_statPolygons.load(std::memory_order_relaxed);
+        drawCalls = m_statDrawCalls.load(std::memory_order_relaxed);
+        frameTimeMs = m_statFrameTime.load(std::memory_order_relaxed);
+    }
 
 private:
     // --- 初始化相關 ---
@@ -81,4 +89,11 @@ private:
     DirectX::XMFLOAT3 m_cameraPos = { 0.0f, 0.0f, -3.0f };
     float m_pitch = 0.0f;
     float m_yaw = 0.0f;
+
+    // 效能統計變數 (Atomic 確保跨執行緒讀寫安全)
+    std::atomic<int>   m_statVertices{ 0 };
+    std::atomic<int>   m_statPolygons{ 0 };
+    std::atomic<int>   m_statDrawCalls{ 0 };
+    std::atomic<float> m_statFrameTime{ 0.0f };
+    std::chrono::high_resolution_clock::time_point m_lastFrameTime;
 };
