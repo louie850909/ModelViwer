@@ -5,7 +5,7 @@ namespace UI.ViewModels;
 
 /// <summary>
 /// 相機狀態 (Source of Truth)。
-/// 持有 Yaw/Pitch/Position/OrbitRadius，並提供 Orbit、FPS Look、Zoom、WASD 方法。
+/// 持有 Yaw/Pitch/Position/OrbitRadius，並提供 Orbit、FPS Look、Zoom、WASD、Focus 方法。
 /// 不直接接觸任何 WinUI / P/Invoke API。
 /// </summary>
 internal sealed class CameraViewModel : ObservableObject
@@ -26,16 +26,13 @@ internal sealed class CameraViewModel : ObservableObject
     /// <summary>Orbit 旋轉 (Alt + 左鍵拖曳)。</summary>
     public void ApplyOrbit(float dx, float dy, float sensitivity = 0.005f)
     {
-        // 1. 計算 Pivot
         Matrix4x4 oldRot = Matrix4x4.CreateFromYawPitchRoll(Yaw, Pitch, 0f);
         Vector3 oldForward = Vector3.Transform(Vector3.UnitZ, oldRot);
         Vector3 pivot = Position + oldForward * OrbitRadius;
 
-        // 2. 更新角度
         float newYaw   = Yaw   + dx * sensitivity;
         float newPitch = Math.Clamp(Pitch + dy * sensitivity, -PitchLimit, PitchLimit);
 
-        // 3. 重新計算位置
         Matrix4x4 newRot = Matrix4x4.CreateFromYawPitchRoll(newYaw, newPitch, 0f);
         Vector3 newForward = Vector3.Transform(Vector3.UnitZ, newRot);
 
@@ -76,5 +73,22 @@ internal sealed class CameraViewModel : ObservableObject
     {
         float mult = delta > 0 ? 1.2f : 0.8f;
         MoveSpeed = Math.Clamp(MoveSpeed * mult, MinSpeed, MaxSpeed);
+    }
+
+    /// <summary>
+    /// 對焦到指定目標位置。
+    /// 相機從目前距離 (orbitRadius) 的後方面對盤指向目標點。
+    /// 同時更新 OrbitRadius 供後續 Orbit 使用。
+    /// </summary>
+    /// <param name="target">目標節點的世界座標 (Translation)</param>
+    /// <param name="distance">對焦後保持的距離，預設 3.0</param>
+    public void FocusOn(Vector3 target, float distance = 3.0f)
+    {
+        // 保持現有方向角度，只移動位置與距離
+        Matrix4x4 rot = Matrix4x4.CreateFromYawPitchRoll(Yaw, Pitch, 0f);
+        Vector3 forward = Vector3.Transform(Vector3.UnitZ, rot);
+
+        OrbitRadius = distance;
+        Position    = target - forward * distance;
     }
 }

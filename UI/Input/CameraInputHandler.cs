@@ -1,6 +1,7 @@
-using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Controls;
+using System;
+using System.Numerics;
 using Windows.System;
 using UI.ViewModels;
 
@@ -12,17 +13,29 @@ namespace UI.Input;
 /// </summary>
 internal sealed class CameraInputHandler
 {
-    private readonly CameraViewModel _camera;
-    private readonly SwapChainPanel  _panel;
+    private readonly CameraViewModel    _camera;
+    private readonly SwapChainPanel     _panel;
 
-    private bool _isOrbiting    = false;
-    private bool _isFPSLooking  = false;
+    /// <summary>
+    /// 取得目前選取節點的世界座標。
+    /// 由外部提供 (MainViewModel 注入)，讓 Handler 不需要知道 ViewModel 內部細節。
+    /// 回傳 null 代表目前沒有選取節點。
+    /// </summary>
+    private readonly Func<Vector3?> _getSelectedNodePosition;
+
+    private bool _isOrbiting   = false;
+    private bool _isFPSLooking = false;
+    private bool _wasFKeyDown  = false; // 違緣偵測，避免每幀重複觸發
     private Windows.Foundation.Point _lastPos;
 
-    public CameraInputHandler(SwapChainPanel panel, CameraViewModel camera)
+    public CameraInputHandler(
+        SwapChainPanel panel,
+        CameraViewModel camera,
+        Func<Vector3?> getSelectedNodePosition)
     {
-        _panel  = panel;
-        _camera = camera;
+        _panel                   = panel;
+        _camera                  = camera;
+        _getSelectedNodePosition = getSelectedNodePosition;
 
         _panel.PointerPressed      += OnPointerPressed;
         _panel.PointerMoved        += OnPointerMoved;
@@ -31,23 +44,35 @@ internal sealed class CameraInputHandler
     }
 
     /// <summary>
-    /// 每幀由 GameLoop 呼叫，處理 WASD 持續移動。
+    /// 每幀由 GameLoop 呼叫，處理 WASD 持續移動與 F 鍵對焦。
     /// </summary>
     public void TickMovement()
     {
-        if (!_isFPSLooking) return;
+        // ─ WASD 移動 ─────────────────────────────────
+        if (_isFPSLooking)
+        {
+            float speed = _camera.MoveSpeed;
+            float dR = 0f, dU = 0f, dF = 0f;
 
-        float speed = _camera.MoveSpeed;
-        float dR = 0f, dU = 0f, dF = 0f;
+            if (IsKeyDown(VirtualKey.W)) dF += speed;
+            if (IsKeyDown(VirtualKey.S)) dF -= speed;
+            if (IsKeyDown(VirtualKey.A)) dR -= speed;
+            if (IsKeyDown(VirtualKey.D)) dR += speed;
+            if (IsKeyDown(VirtualKey.E)) dU += speed;
+            if (IsKeyDown(VirtualKey.Q)) dU -= speed;
 
-        if (IsKeyDown(VirtualKey.W)) dF += speed;
-        if (IsKeyDown(VirtualKey.S)) dF -= speed;
-        if (IsKeyDown(VirtualKey.A)) dR -= speed;
-        if (IsKeyDown(VirtualKey.D)) dR += speed;
-        if (IsKeyDown(VirtualKey.E)) dU += speed;
-        if (IsKeyDown(VirtualKey.Q)) dU -= speed;
+            _camera.ApplyMove(dR, dU, dF);
+        }
 
-        _camera.ApplyMove(dR, dU, dF);
+        // ─ F 鍵對焦 (遷跃偵測，按一次只觸發一次) ───────────
+        bool isFKeyDown = IsKeyDown(VirtualKey.F);
+        if (isFKeyDown && !_wasFKeyDown)
+        {
+            var pos = _getSelectedNodePosition();
+            if (pos.HasValue)
+                _camera.FocusOn(pos.Value);
+        }
+        _wasFKeyDown = isFKeyDown;
     }
 
     // ── 事件處理 ─────────────────────────────────────────
