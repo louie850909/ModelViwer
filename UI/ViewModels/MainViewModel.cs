@@ -1,3 +1,4 @@
+using System;
 using UI.Services;
 
 namespace UI.ViewModels;
@@ -7,9 +8,9 @@ namespace UI.ViewModels;
 /// </summary>
 internal sealed class MainViewModel
 {
-    public RendererService   Renderer  { get; } = new();
-    public CameraViewModel   Camera    { get; } = new();
-    public StatsViewModel    Stats     { get; } = new();
+    public RendererService    Renderer  { get; } = new();
+    public CameraViewModel    Camera    { get; } = new();
+    public StatsViewModel     Stats     { get; } = new();
     public HierarchyViewModel Hierarchy { get; } = new();
     public TransformViewModel Transform { get; }
 

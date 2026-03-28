@@ -2,7 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using System;
+using System.Collections.Generic;
 using UI.Input;
 using UI.ViewModels;
 
@@ -15,28 +15,25 @@ namespace UI;
 public sealed partial class MainWindow : Window
 {
     private readonly MainViewModel      _vm;
-    private readonly CameraInputHandler _cameraInput;
+    private CameraInputHandler?         _cameraInput;
 
-    // 用來記錄 TreeViewNode → NodeItem 的映射
-    private System.Collections.Generic.Dictionary<TreeViewNode, ViewModels.NodeItem> _nodeMap = new();
+    // TreeViewNode → NodeItem 映射表
+    private readonly Dictionary<TreeViewNode, NodeItem> _nodeMap = new();
 
     public MainWindow()
     {
         InitializeComponent();
         _vm = new MainViewModel();
 
-        // Hierarchy 選取變更時同步 Inspector 面板
+        // Hierarchy 選取變更時同步更新 Inspector
         _vm.Hierarchy.OnNodeSelected += OnNodeSelected;
 
         // 載入中狀態變更時切換 LoadingOverlay
         _vm.IsLoadingChanged += isLoading =>
             LoadingOverlay.Visibility = isLoading ? Visibility.Visible : Visibility.Collapsed;
 
-        // 每幀更新 (GameLoop)
+        // GameLoop
         CompositionTarget.Rendering += OnGameLoopTick;
-
-        // 輸入處理器延遲到 Panel 載入後再建立
-        _cameraInput = null!; // 先佔位，RenderPanel_Loaded 中初始化
     }
 
     // ── GameLoop ─────────────────────────────────────────
@@ -61,12 +58,7 @@ public sealed partial class MainWindow : Window
         StatusText.Text = ok ? "DX12 Ready ✓" : "DX12 Init Failed ✗";
 
         if (ok)
-        {
-            // 輸入處理器在 Renderer 初始化後才綁定
-            var inputField = typeof(MainWindow).GetField("_cameraInput",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            inputField?.SetValue(this, new CameraInputHandler(RenderPanel, _vm.Camera));
-        }
+            _cameraInput = new CameraInputHandler(RenderPanel, _vm.Camera);
     }
 
     private void RenderPanel_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -96,11 +88,7 @@ public sealed partial class MainWindow : Window
         if (file == null) return;
 
         _vm.IsLoading = true;
-
-        // async/await 取代 callback 回呼，更直觀
         await _vm.Renderer.LoadModelAsync(file.Path);
-
-        // 回到 UI 執行緒後直接更新
         _vm.IsLoading = false;
         RebuildHierarchyTree();
     }
@@ -109,15 +97,20 @@ public sealed partial class MainWindow : Window
 
     private void RebuildHierarchyTree()
     {
-        _vm.Hierarchy.Rebuild(_vm.Renderer);
         _nodeMap.Clear();
         HierarchyTree.RootNodes.Clear();
-        BuildTreeNodes(_vm.Hierarchy.RootNodes, HierarchyTree.RootNodes);
+        _vm.Hierarchy.Rebuild(_vm.Renderer);
+        AppendTreeNodes(_vm.Hierarchy.RootNodes, HierarchyTree.RootNodes);
     }
 
-    private void BuildTreeNodes(
-        System.Collections.ObjectModel.ObservableCollection<ViewModels.NodeItem> source,
-        Microsoft.UI.Xaml.Controls.TreeViewNodeCollection target)
+    /// <summary>
+    /// 遞迴將 NodeItem 樹轉換成 WinUI TreeViewNode 樹。
+    /// TreeView.RootNodes 和 TreeViewNode.Children 共同實作 IList&lt;TreeViewNode&gt;，
+    /// 不需要區分型別。
+    /// </summary>
+    private void AppendTreeNodes(
+        System.Collections.ObjectModel.ObservableCollection<NodeItem> source,
+        IList<TreeViewNode> target)
     {
         foreach (var item in source)
         {
@@ -125,7 +118,7 @@ public sealed partial class MainWindow : Window
             _nodeMap[node] = item;
             target.Add(node);
             if (item.Children.Count > 0)
-                BuildTreeNodes(item.Children, node.Children);
+                AppendTreeNodes(item.Children, node.Children);
         }
     }
 
@@ -138,19 +131,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnNodeSelected(ViewModels.NodeItem? node)
+    private void OnNodeSelected(NodeItem? node)
     {
         if (node == null) return;
-        NodeNameText.Text  = _vm.Transform.NodeName;
-        PosXText.Text = _vm.Transform.PX.ToString("F3");
-        PosYText.Text = _vm.Transform.PY.ToString("F3");
-        PosZText.Text = _vm.Transform.PZ.ToString("F3");
-        RotXText.Text = _vm.Transform.RX.ToString("F3");
-        RotYText.Text = _vm.Transform.RY.ToString("F3");
-        RotZText.Text = _vm.Transform.RZ.ToString("F3");
-        ScaleXText.Text = _vm.Transform.SX.ToString("F3");
-        ScaleYText.Text = _vm.Transform.SY.ToString("F3");
-        ScaleZText.Text = _vm.Transform.SZ.ToString("F3");
+        NodeNameText.Text   = _vm.Transform.NodeName;
+        PosXText.Text       = _vm.Transform.PX.ToString("F3");
+        PosYText.Text       = _vm.Transform.PY.ToString("F3");
+        PosZText.Text       = _vm.Transform.PZ.ToString("F3");
+        RotXText.Text       = _vm.Transform.RX.ToString("F3");
+        RotYText.Text       = _vm.Transform.RY.ToString("F3");
+        RotZText.Text       = _vm.Transform.RZ.ToString("F3");
+        ScaleXText.Text     = _vm.Transform.SX.ToString("F3");
+        ScaleYText.Text     = _vm.Transform.SY.ToString("F3");
+        ScaleZText.Text     = _vm.Transform.SZ.ToString("F3");
     }
 
     // ── Transform Inspector ───────────────────────────────

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using UI.Services;
@@ -9,9 +10,9 @@ namespace UI.ViewModels;
 /// </summary>
 internal sealed class NodeItem
 {
-    public string Name       { get; init; } = string.Empty;
-    public int    CppIndex   { get; init; }
-    public int    ParentIndex{ get; init; }
+    public string Name        { get; init; } = string.Empty;
+    public int    CppIndex    { get; init; }
+    public int    ParentIndex { get; init; }
     public ObservableCollection<NodeItem> Children { get; } = new();
 }
 
