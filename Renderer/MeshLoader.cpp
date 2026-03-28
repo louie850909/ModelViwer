@@ -55,7 +55,7 @@ namespace {
         if (sn.name.empty()) sn.name = "Node_" + std::to_string(nodeIndex);
         sn.parentIndex = parentIndex;
 
-        // glTF 可能使用 TRS 陣列 (主動cast以迴避編譯警告)
+        // glTF 可能使用 TRS 陣列 (主動 cast 以迴避編譯警告)
         if (gltfNode.translation.size() == 3) {
             sn.t[0] = static_cast<float>(gltfNode.translation[0]);
             sn.t[1] = static_cast<float>(gltfNode.translation[1]);
@@ -74,7 +74,7 @@ namespace {
         }
 
         // 如果這個節點有綁定模型，就把對應的 SubMesh 加進來
-        if (gltfNode.mesh >= 0 && gltfNode.mesh < gltfMeshToSubMeshes.size()) {
+        if (gltfNode.mesh >= 0 && gltfNode.mesh < (int)gltfMeshToSubMeshes.size()) {
             for (int subIdx : gltfMeshToSubMeshes[gltfNode.mesh]) {
                 sn.subMeshIndices.push_back(subIdx);
             }
@@ -130,7 +130,7 @@ std::shared_ptr<Mesh> MeshLoader::LoadViaAssimp(const std::string& path) {
         SubMesh sub;
         sub.indexOffset = (UINT)mesh->indices.size();
         sub.indexCount = aiM->mNumFaces * 3;
-        //記錄這個 aiMesh 使用哪個材質
+        // 記錄這個 aiMesh 使用哪個材質
         sub.materialIndex = aiM->mMaterialIndex;
 
         // --------- Assimp 的半透明判斷邏輯 ---------
@@ -143,10 +143,6 @@ std::shared_ptr<Mesh> MeshLoader::LoadViaAssimp(const std::string& path) {
 
             // 條件 2：檢查是否有綁定「透明度貼圖 (Opacity Map)」
             bool hasOpacityTexture = (mat->GetTextureCount(aiTextureType_OPACITY) > 0);
-
-            // 條件 3：某些舊版 OBJ 格式會把透明貼圖當作 DISPLACEMENT 或 SHININESS 傳入，
-            // 但最正規的做法是檢查 Diffuse 貼圖是否本身就被標記為帶有 Alpha
-            // (為了保險起見，只要滿足條件 1 或條件 2，我們就視為半透明)
 
             sub.isTransparent = (opacity < 1.0f) || hasOpacityTexture;
         }
@@ -224,99 +220,98 @@ std::shared_ptr<Mesh> MeshLoader::LoadGltf(const std::string& path) {
         return tinygltf::GetComponentSizeInBytes(acc.componentType) * tinygltf::GetNumComponentsInType(acc.type);
         };
 
+    // [修正] 移除錯誤的外層 for (auto& gMesh) 迴圈，改為直接用索引 m 遍歷
     std::vector<std::vector<int>> gltfMeshToSubMeshes(model.meshes.size());
     int currentSubMeshIdx = 0;
-    for (auto& gMesh : model.meshes) {
-        for (size_t m = 0; m < model.meshes.size(); ++m) {
-            for (const auto& prim : model.meshes[m].primitives) {
+    for (size_t m = 0; m < model.meshes.size(); ++m) {
+        for (const auto& prim : model.meshes[m].primitives) {
 
-                // 記錄這個子網格在「全局 Vertex Buffer」中的起始位置
-                UINT vertexOffset = (UINT)mesh->vertices.size();
+            // 記錄這個子網格在「全局 Vertex Buffer」中的起始位置
+            UINT vertexOffset = (UINT)mesh->vertices.size();
 
-                // 取得 Position 資源
-                auto& posAcc = model.accessors[prim.attributes.at("POSITION")];
-                auto& posView = model.bufferViews[posAcc.bufferView];
-                size_t posStride = GetStride(posAcc, posView);
-                const uint8_t* posBase = model.buffers[posView.buffer].data.data() + posView.byteOffset + posAcc.byteOffset;
+            // 取得 Position 資源
+            auto& posAcc = model.accessors[prim.attributes.at("POSITION")];
+            auto& posView = model.bufferViews[posAcc.bufferView];
+            size_t posStride = GetStride(posAcc, posView);
+            const uint8_t* posBase = model.buffers[posView.buffer].data.data() + posView.byteOffset + posAcc.byteOffset;
 
-                // 取得 Normal 資源 (如果有)
-                const uint8_t* nrmBase = nullptr;
-                size_t nrmStride = 0;
-                if (prim.attributes.count("NORMAL")) {
-                    auto& nrmAcc = model.accessors[prim.attributes.at("NORMAL")];
-                    auto& nrmView = model.bufferViews[nrmAcc.bufferView];
-                    nrmStride = GetStride(nrmAcc, nrmView);
-                    nrmBase = model.buffers[nrmView.buffer].data.data() + nrmView.byteOffset + nrmAcc.byteOffset;
-                }
-
-                // 取得 UV 資源 (如果有)
-                const uint8_t* uvBase = nullptr;
-                size_t uvStride = 0;
-                if (prim.attributes.count("TEXCOORD_0")) {
-                    auto& uvAcc = model.accessors[prim.attributes.at("TEXCOORD_0")];
-                    auto& uvView = model.bufferViews[uvAcc.bufferView];
-                    uvStride = GetStride(uvAcc, uvView);
-                    uvBase = model.buffers[uvView.buffer].data.data() + uvView.byteOffset + uvAcc.byteOffset;
-                }
-
-                // 使用 Pointer Math 加上 Stride 來精準跳躍記憶體
-                for (size_t i = 0; i < posAcc.count; i++) {
-                    Vertex v;
-                    const float* p = (const float*)(posBase + i * posStride);
-                    v.position = { p[0], p[1], p[2] };
-
-                    if (nrmBase) {
-                        const float* n = (const float*)(nrmBase + i * nrmStride);
-                        v.normal = { n[0], n[1], n[2] };
-                    }
-                    else {
-                        v.normal = { 0, 1, 0 };
-                    }
-
-                    if (uvBase) {
-                        const float* u = (const float*)(uvBase + i * uvStride);
-                        v.uv = { u[0], u[1] };
-                    }
-                    else {
-                        v.uv = { 0, 0 };
-                    }
-                    mesh->vertices.push_back(v);
-                }
-
-                // 處理 Indices 時，確保每個 Index 都加上 vertexOffset
-                SubMesh sub;
-                sub.indexOffset = (UINT)mesh->indices.size(); // 記錄這個子網格的起始 Index
-
-                // 記錄這個子網格使用哪個材質
-                sub.materialIndex = prim.material;
-                sub.isTransparent = (prim.material >= 0 && model.materials[prim.material].alphaMode == "BLEND");
-
-                auto& idxAcc = model.accessors[prim.indices];
-                auto& idxView = model.bufferViews[idxAcc.bufferView];
-                const uint8_t* idxRaw = model.buffers[idxView.buffer].data.data() + idxView.byteOffset + idxAcc.byteOffset;
-
-                sub.indexCount = (UINT)idxAcc.count;
-
-                for (size_t i = 0; i < idxAcc.count; i++) {
-                    if (idxAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-                        const uint16_t* buf = (const uint16_t*)idxRaw;
-                        mesh->indices.push_back(buf[i] + vertexOffset); // 補上偏移
-                    }
-                    else if (idxAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-                        const uint32_t* buf = (const uint32_t*)idxRaw;
-                        mesh->indices.push_back(buf[i] + vertexOffset); // 補上偏移
-                    }
-                }
-                mesh->subMeshes.push_back(sub);
-
-                // 記錄這個 glTF Mesh 產生了哪幾個 SubMesh
-                gltfMeshToSubMeshes[m].push_back(currentSubMeshIdx++);
+            // 取得 Normal 資源 (如果有)
+            const uint8_t* nrmBase = nullptr;
+            size_t nrmStride = 0;
+            if (prim.attributes.count("NORMAL")) {
+                auto& nrmAcc = model.accessors[prim.attributes.at("NORMAL")];
+                auto& nrmView = model.bufferViews[nrmAcc.bufferView];
+                nrmStride = GetStride(nrmAcc, nrmView);
+                nrmBase = model.buffers[nrmView.buffer].data.data() + nrmView.byteOffset + nrmAcc.byteOffset;
             }
+
+            // 取得 UV 資源 (如果有)
+            const uint8_t* uvBase = nullptr;
+            size_t uvStride = 0;
+            if (prim.attributes.count("TEXCOORD_0")) {
+                auto& uvAcc = model.accessors[prim.attributes.at("TEXCOORD_0")];
+                auto& uvView = model.bufferViews[uvAcc.bufferView];
+                uvStride = GetStride(uvAcc, uvView);
+                uvBase = model.buffers[uvView.buffer].data.data() + uvView.byteOffset + uvAcc.byteOffset;
+            }
+
+            // 使用 Pointer Math 加上 Stride 來精準跳躍記憶體
+            for (size_t i = 0; i < posAcc.count; i++) {
+                Vertex v;
+                const float* p = (const float*)(posBase + i * posStride);
+                v.position = { p[0], p[1], p[2] };
+
+                if (nrmBase) {
+                    const float* n = (const float*)(nrmBase + i * nrmStride);
+                    v.normal = { n[0], n[1], n[2] };
+                }
+                else {
+                    v.normal = { 0, 1, 0 };
+                }
+
+                if (uvBase) {
+                    const float* u = (const float*)(uvBase + i * uvStride);
+                    v.uv = { u[0], u[1] };
+                }
+                else {
+                    v.uv = { 0, 0 };
+                }
+                mesh->vertices.push_back(v);
+            }
+
+            // 處理 Indices 時，確保每個 Index 都加上 vertexOffset
+            SubMesh sub;
+            sub.indexOffset = (UINT)mesh->indices.size(); // 記錄這個子網格的起始 Index
+
+            // 記錄這個子網格使用哪個材質
+            sub.materialIndex = prim.material;
+            sub.isTransparent = (prim.material >= 0 && model.materials[prim.material].alphaMode == "BLEND");
+
+            auto& idxAcc = model.accessors[prim.indices];
+            auto& idxView = model.bufferViews[idxAcc.bufferView];
+            const uint8_t* idxRaw = model.buffers[idxView.buffer].data.data() + idxView.byteOffset + idxAcc.byteOffset;
+
+            sub.indexCount = (UINT)idxAcc.count;
+
+            for (size_t i = 0; i < idxAcc.count; i++) {
+                if (idxAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                    const uint16_t* buf = (const uint16_t*)idxRaw;
+                    mesh->indices.push_back(buf[i] + vertexOffset); // 補上偏移
+                }
+                else if (idxAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+                    const uint32_t* buf = (const uint32_t*)idxRaw;
+                    mesh->indices.push_back(buf[i] + vertexOffset); // 補上偏移
+                }
+            }
+            mesh->subMeshes.push_back(sub);
+
+            // 記錄這個 glTF Mesh 產生了哪幾個 SubMesh
+            gltfMeshToSubMeshes[m].push_back(currentSubMeshIdx++);
         }
     }
 
     int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
-    if (defaultScene < model.scenes.size()) {
+    if (defaultScene < (int)model.scenes.size()) {
         for (int nodeIdx : model.scenes[defaultScene].nodes) {
             ParseGltfNode(model, nodeIdx, -1, mesh->nodes, gltfMeshToSubMeshes);
         }
