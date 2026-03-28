@@ -77,7 +77,7 @@ extern "C" {
 
     __declspec(dllexport) void Renderer_GetNodeInfo(int index, char* outName, int maxLen, int* outParentIndex) {
         auto mesh = g_renderer.GetMesh();
-        if (mesh && index >= 0 && index < mesh->nodes.size()) {
+        if (mesh && index >= 0 && index < (int)mesh->nodes.size()) {
             const auto& node = mesh->nodes[index];
             if (outParentIndex) *outParentIndex = node.parentIndex;
             if (outName && maxLen > 0) {
@@ -87,9 +87,11 @@ extern "C" {
         }
     }
 
+    // [修正] 加上 m_renderMutex，避免 render thread 讀取時發生 data race
     __declspec(dllexport) void Renderer_GetNodeTransform(int index, float* outT, float* outR, float* outS) {
+        std::lock_guard<std::mutex> lock(g_renderer.m_renderMutex);
         auto mesh = g_renderer.GetMesh();
-        if (mesh && index >= 0 && index < mesh->nodes.size()) {
+        if (mesh && index >= 0 && index < (int)mesh->nodes.size()) {
             const auto& node = mesh->nodes[index];
             if (outT) { outT[0] = node.t[0]; outT[1] = node.t[1]; outT[2] = node.t[2]; }
             if (outR) { outR[0] = node.r[0]; outR[1] = node.r[1]; outR[2] = node.r[2]; outR[3] = node.r[3]; }
@@ -97,9 +99,11 @@ extern "C" {
         }
     }
 
+    // [修正] 加上 m_renderMutex，避免寫入時 render thread 同時讀取造成 data race
     __declspec(dllexport) void Renderer_SetNodeTransform(int index, float* inT, float* inR, float* inS) {
+        std::lock_guard<std::mutex> lock(g_renderer.m_renderMutex);
         auto mesh = g_renderer.GetMesh();
-        if (mesh && index >= 0 && index < mesh->nodes.size()) {
+        if (mesh && index >= 0 && index < (int)mesh->nodes.size()) {
             auto& node = mesh->nodes[index];
             if (inT) { node.t[0] = inT[0]; node.t[1] = inT[1]; node.t[2] = inT[2]; }
             if (inR) { node.r[0] = inR[0]; node.r[1] = inR[1]; node.r[2] = inR[2]; node.r[3] = inR[3]; }

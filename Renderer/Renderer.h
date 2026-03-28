@@ -7,15 +7,19 @@
 #include <chrono>
 
 // 對應 shader 的 cbuffer 結構
+// [修正] 新增 modelMatrix 用於正確計算 worldPos
+// 欄位順序必須與 BaseColor.hlsl 的 cbuffer SceneConstants 完全一致
 struct SceneConstants {
     DirectX::XMFLOAT4X4 mvp;
+    DirectX::XMFLOAT4X4 modelMatrix;  // [新增] Model Matrix，用於計算 worldPos
     DirectX::XMFLOAT4X4 normalMatrix;
     DirectX::XMFLOAT3   cameraPos;
-	float			    _pad1; // 填充對齊 (cbuffer 中的 float3 會自動對齊到 16 bytes，所以這裡補一個 float 當作填充)
+    float               _pad1;        // 填充對齊 (cbuffer 中的 float3 會自動對齊到 16 bytes)
     DirectX::XMFLOAT3   lightDir;
     float               _pad2;
     DirectX::XMFLOAT4   baseColor;
 };
+// sizeof(SceneConstants) = 3 * 64 + 16 + 16 = 240 bytes = 60 個 float
 
 class Renderer {
 public:
@@ -40,7 +44,7 @@ private:
     void CreateSwapChain(IUnknown* panelUnknown, int width, int height);
     void CreateRTV();
     void CreateDSV();
-    void CreateRootSignatureAndPSO();  // ← 補上
+    void CreateRootSignatureAndPSO();
 
     // --- 工具 ---
     void WaitForGpu();

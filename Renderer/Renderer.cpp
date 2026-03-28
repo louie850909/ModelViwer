@@ -195,15 +195,19 @@ void Renderer::RenderFrame() {
                 const auto& node = m_mesh->nodes[n];
                 if (node.subMeshIndices.empty()) continue; // 沒東西要畫就跳過
 
-                // 組合「這個節點」專屬的 MVP 矩陣
+                // 組合「這個節點」專屬的常數
                 SceneConstants cb = {};
-                XMStoreFloat4x4(&cb.mvp, XMMatrixTranspose(globalTransforms[n] * view * proj));
+                XMMATRIX modelMat = globalTransforms[n];
+                XMStoreFloat4x4(&cb.mvp,         XMMatrixTranspose(modelMat * view * proj));
+                // [修正] 填入 modelMatrix，供 Shader 計算正確的 worldPos
+                XMStoreFloat4x4(&cb.modelMatrix, XMMatrixTranspose(modelMat));
+                // normalMatrix = transpose(inverse(modelMatrix))，用於正確轉換法線
+                XMStoreFloat4x4(&cb.normalMatrix, XMMatrixTranspose(XMMatrixInverse(nullptr, modelMat)));
                 XMStoreFloat3(&cb.lightDir, XMVector3Normalize(forward));
-                XMStoreFloat4x4(&cb.normalMatrix, XMMatrixTranspose(XMMatrixInverse(nullptr, globalTransforms[n])));
                 cb.baseColor = { 0.8f, 0.6f, 0.4f, 1.0f };
                 cb.cameraPos = m_cameraPos;
 
-                // 使用 Root Constants 直接把 44 個 float (176 bytes) 送進 GPU 管線
+                // 使用 Root Constants 把 60 個 float (240 bytes) 送進 GPU 管線
                 m_cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
 
                 // 繪製這個節點底下的所有 SubMesh
@@ -212,7 +216,7 @@ void Renderer::RenderFrame() {
                     if (sub.isTransparent != drawTransparent) continue;
 
                     int matIdx = sub.materialIndex;
-                    if (matIdx < 0 || matIdx >= m_mesh->texturePaths.size()) matIdx = 0;
+                    if (matIdx < 0 || matIdx >= (int)m_mesh->texturePaths.size()) matIdx = 0;
 
                     CD3DX12_GPU_DESCRIPTOR_HANDLE srvGpuHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx * 2, m_srvDescriptorSize);
                     m_cmdList->SetGraphicsRootDescriptorTable(1, srvGpuHandle);
@@ -321,10 +325,10 @@ void Renderer::CreateRootSignatureAndPSO() {
     CD3DX12_DESCRIPTOR_RANGE1 srvRange;
     srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
 
-    // 2. 設定 Root Parameters (0 是 MVP 矩陣，1 是貼圖陣列)
+    // 2. 設定 Root Parameters (0 是常數，1 是貼圖陣列)
     CD3DX12_ROOT_PARAMETER1 rootParameters[2];
-    // 44 代表 SceneConstants 結構的大小除以 4 (176 bytes / 4 = 44 個 32-bit 數值)
-    rootParameters[0].InitAsConstants(44, 0);
+    // [修正] sizeof(SceneConstants) / 4 = 240 / 4 = 60 個 32-bit 數值
+    rootParameters[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);
     rootParameters[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
     // 3. 建立一個預設的靜態採樣器 (s0)
@@ -335,7 +339,7 @@ void Renderer::CreateRootSignatureAndPSO() {
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // 4. 打包簽名 (宣告為 rsDesc 以符合您下方的序列化程式碼)
+    // 4. 打包簽名
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
     rsDesc.Init_1_1(2, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -366,12 +370,12 @@ void Renderer::CreateRootSignatureAndPSO() {
     psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
     psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
 
-	// 大部分狀態使用預設值，只有幾個需要特別設定
+    // 大部分狀態使用預設值，只有幾個需要特別設定
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 
-	// 關鍵：不透明和半透明物件都要開啟 Depth Test，才能正確遮擋
+    // 關鍵：不透明和半透明物件都要開啟 Depth Test，才能正確遮擋
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
