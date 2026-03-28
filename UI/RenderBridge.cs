@@ -28,4 +28,10 @@ internal static class RenderBridge
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern void Renderer_GetStats(out int vertices, out int polygons, out int drawCalls, out float frameTimeMs);
+
+    [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Renderer_GetNodeCount();
+
+    [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Renderer_GetNodeInfo(int index, byte[] outName, int maxLen, out int outParentIndex);
 }

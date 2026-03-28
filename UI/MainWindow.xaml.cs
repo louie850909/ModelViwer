@@ -182,23 +182,44 @@ public sealed partial class MainWindow : Window
     {
         HierarchyTree.RootNodes.Clear();
 
-        // 取得目前的效能數據，藉此得知有幾個 Draw Calls / SubMeshes
-        RenderBridge.Renderer_GetStats(out int v, out int p, out int dc, out float ft);
+        // 1. 取得節點總數
+        int nodeCount = RenderBridge.Renderer_GetNodeCount();
+        if (nodeCount == 0) return;
 
-        // 建立根節點 (代表整個模型)
-        var rootNode = new TreeViewNode() { Content = "Root Model", IsExpanded = true };
+        // 2. 準備緩衝區與查表 (用來將子節點綁定到對應的父節點)
+        byte[] nameBuffer = new byte[256];
+        var nodeMap = new System.Collections.Generic.Dictionary<int, TreeViewNode>();
 
-        // 由於目前 C++ 尚未傳遞真實的 Node 結構，我們先用 SubMesh 數量來模擬子節點
-        // 這樣至少能看到模型是由幾個物件/材質組成的
-        int subMeshCount = dc; // 這裡簡化：假設 DrawCalls 大致等於 SubMesh 數量
-
-        for (int i = 0; i < subMeshCount; i++)
+        // 3. 遍歷 C++ 傳來的平坦化陣列
+        for (int i = 0; i < nodeCount; i++)
         {
-            var childNode = new TreeViewNode() { Content = $"SubMesh_{i}" };
-            rootNode.Children.Add(childNode);
-        }
+            RenderBridge.Renderer_GetNodeInfo(i, nameBuffer, nameBuffer.Length, out int parentIndex);
 
-        HierarchyTree.RootNodes.Add(rootNode);
+            // 尋找 C++ 字串的 Null 結尾符號 (0)
+            int len = Array.IndexOf(nameBuffer, (byte)0);
+            if (len < 0) len = 256;
+
+            // 解析為 UTF-8 字串 (支援日文/中文節點名稱)
+            string nodeName = System.Text.Encoding.UTF8.GetString(nameBuffer, 0, len);
+
+            // 建立 WinUI 樹狀節點
+            var treeNode = new TreeViewNode() { Content = nodeName, IsExpanded = true };
+            nodeMap[i] = treeNode; // 將自己加入字典，方便後面的子節點找爸爸
+
+            // 如果是根節點 (parentIndex == -1)，直接加到 UI 的最外層
+            if (parentIndex == -1)
+            {
+                HierarchyTree.RootNodes.Add(treeNode);
+            }
+            else
+            {
+                // 如果有父節點，就把它塞進父節點的 Children 裡面
+                if (nodeMap.TryGetValue(parentIndex, out var parentNode))
+                {
+                    parentNode.Children.Add(treeNode);
+                }
+            }
+        }
     }
 
     // ==========================================

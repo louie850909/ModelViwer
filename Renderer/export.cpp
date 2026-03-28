@@ -70,4 +70,21 @@ extern "C" {
         }
     }
 
+    __declspec(dllexport) int Renderer_GetNodeCount() {
+        auto mesh = g_renderer.GetMesh();
+        return mesh ? (int)mesh->nodes.size() : 0;
+    }
+
+    __declspec(dllexport) void Renderer_GetNodeInfo(int index, char* outName, int maxLen, int* outParentIndex) {
+        auto mesh = g_renderer.GetMesh();
+        if (mesh && index >= 0 && index < mesh->nodes.size()) {
+            const auto& node = mesh->nodes[index];
+            if (outParentIndex) *outParentIndex = node.parentIndex;
+            if (outName && maxLen > 0) {
+                // 安全複製字串，避免溢位
+                strncpy_s(outName, maxLen, node.name.c_str(), _TRUNCATE);
+            }
+        }
+    }
+
 } // extern "C"

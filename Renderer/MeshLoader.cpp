@@ -16,6 +16,36 @@
 
 #include <filesystem>
 
+namespace {
+    // 遞迴解析 Assimp 節點
+    void ParseAssimpNode(aiNode* node, int parentIndex, std::vector<SceneNode>& outNodes) {
+        int currentIndex = (int)outNodes.size();
+        SceneNode sn;
+        sn.name = node->mName.C_Str();
+        if (sn.name.empty()) sn.name = "Unnamed_Node";
+        sn.parentIndex = parentIndex;
+        outNodes.push_back(sn);
+
+        for (unsigned int i = 0; i < node->mNumChildren; i++) {
+            ParseAssimpNode(node->mChildren[i], currentIndex, outNodes);
+        }
+    }
+
+    // 遞迴解析 glTF 節點
+    void ParseGltfNode(const tinygltf::Model& model, int nodeIndex, int parentIndex, std::vector<SceneNode>& outNodes) {
+        int currentIndex = (int)outNodes.size();
+        SceneNode sn;
+        sn.name = model.nodes[nodeIndex].name;
+        if (sn.name.empty()) sn.name = "Node_" + std::to_string(nodeIndex);
+        sn.parentIndex = parentIndex;
+        outNodes.push_back(sn);
+
+        for (int childIndex : model.nodes[nodeIndex].children) {
+            ParseGltfNode(model, childIndex, currentIndex, outNodes);
+        }
+    }
+}
+
 std::shared_ptr<Mesh> MeshLoader::Load(const std::string& path) {
     std::string ext = std::filesystem::path(path).extension().string();
     // 統一小寫比較
@@ -106,6 +136,8 @@ std::shared_ptr<Mesh> MeshLoader::LoadViaAssimp(const std::string& path) {
         }
         mesh->subMeshes.push_back(sub);
     }
+
+    ParseAssimpNode(scene->mRootNode, -1, mesh->nodes);
     return mesh;
 }
 
@@ -231,6 +263,13 @@ std::shared_ptr<Mesh> MeshLoader::LoadGltf(const std::string& path) {
                 }
             }
             mesh->subMeshes.push_back(sub);
+        }
+    }
+
+    int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
+    if (defaultScene < model.scenes.size()) {
+        for (int nodeIdx : model.scenes[defaultScene].nodes) {
+            ParseGltfNode(model, nodeIdx, -1, mesh->nodes);
         }
     }
     return mesh;

@@ -32,6 +32,7 @@ public:
         drawCalls = m_statDrawCalls.load(std::memory_order_relaxed);
         frameTimeMs = m_statFrameTime.load(std::memory_order_relaxed);
     }
+    std::shared_ptr<Mesh> GetMesh() const { return m_mesh; }
 
 private:
     // --- 初始化相關 ---

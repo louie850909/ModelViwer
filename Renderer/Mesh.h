@@ -16,6 +16,11 @@ struct SubMesh {
     bool isTransparent = false;
 };
 
+struct SceneNode {
+    std::string name;
+    int parentIndex = -1; // -1 代表這是根節點 (沒有父節點)
+};
+
 struct Mesh {
     std::vector<Vertex>   vertices;
     std::vector<uint32_t> indices;
@@ -23,6 +28,9 @@ struct Mesh {
     // 記錄解析出來的貼圖絕對路徑 (索引對應 materialIndex)
     std::vector<std::string> texturePaths;
     std::vector<std::string> metallicRoughnessPaths;
+
+    // 用來儲存整個場景的節點層級 (攤平的陣列)
+    std::vector<SceneNode> nodes;
 
     // GPU 資源
     ComPtr<ID3D12Resource> vertexBuffer;
