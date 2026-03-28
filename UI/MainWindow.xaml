@@ -18,21 +18,21 @@
 
                 <TextBlock Grid.Row="0" Text="Hierarchy" Foreground="#CCCCCC" FontWeight="SemiBold" Margin="12,12,12,8" />
 
-                <TreeView x:Name="HierarchyTree" Grid.Row="1" Background="Transparent" 
+                <TreeView x:Name="HierarchyTree" Grid.Row="1" Background="Transparent"
                           ItemInvoked="HierarchyTree_ItemInvoked">
                 </TreeView>
             </Grid>
         </Border>
 
         <Grid Grid.Column="1">
+            <!--
+                Pointer 事件已移至 CameraInputHandler.cs 中用程式碼註冊，
+                不再在 XAML 綁定以避免 code-behind 必須同步實作對應方法。
+            -->
             <SwapChainPanel x:Name="RenderPanel"
                             Loaded="RenderPanel_Loaded"
                             SizeChanged="RenderPanel_SizeChanged"
-                            Unloaded="RenderPanel_Unloaded"
-                            PointerPressed="RenderPanel_PointerPressed"
-                            PointerMoved="RenderPanel_PointerMoved"
-                            PointerReleased="RenderPanel_PointerReleased"
-                            PointerWheelChanged="RenderPanel_PointerWheelChanged"/>
+                            Unloaded="RenderPanel_Unloaded"/>
 
             <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Margin="16" IsHitTestVisible="False">
                 <TextBlock Text="DX12 Ready ✓" Foreground="White" FontSize="14" x:Name="StatusText"/>
