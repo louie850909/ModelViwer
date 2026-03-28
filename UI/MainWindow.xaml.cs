@@ -2,7 +2,9 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UI.Input;
 using UI.ViewModels;
 
@@ -14,8 +16,8 @@ namespace UI;
 /// </summary>
 public sealed partial class MainWindow : Window
 {
-    private readonly MainViewModel      _vm;
-    private CameraInputHandler?         _cameraInput;
+    private readonly MainViewModel _vm;
+    private CameraInputHandler?    _cameraInput;
 
     // TreeViewNode → NodeItem 映射表
     private readonly Dictionary<TreeViewNode, NodeItem> _nodeMap = new();
@@ -84,7 +86,8 @@ public sealed partial class MainWindow : Window
         picker.FileTypeFilter.Add(".glb");
         picker.FileTypeFilter.Add(".obj");
 
-        var file = await picker.PickSingleFileAsync();
+        // WinRT IAsyncOperation 需要 AsTask() 才能被 C# await
+        var file = await picker.PickSingleFileAsync().AsTask();
         if (file == null) return;
 
         _vm.IsLoading = true;
@@ -103,11 +106,6 @@ public sealed partial class MainWindow : Window
         AppendTreeNodes(_vm.Hierarchy.RootNodes, HierarchyTree.RootNodes);
     }
 
-    /// <summary>
-    /// 遞迴將 NodeItem 樹轉換成 WinUI TreeViewNode 樹。
-    /// TreeView.RootNodes 和 TreeViewNode.Children 共同實作 IList&lt;TreeViewNode&gt;，
-    /// 不需要區分型別。
-    /// </summary>
     private void AppendTreeNodes(
         System.Collections.ObjectModel.ObservableCollection<NodeItem> source,
         IList<TreeViewNode> target)
