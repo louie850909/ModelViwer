@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using System.Threading.Tasks;
 using UI.Input;
 using UI.ViewModels;
@@ -27,14 +28,11 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         _vm = new MainViewModel();
 
-        // Hierarchy 選取變更時同步更新 Inspector
         _vm.Hierarchy.OnNodeSelected += OnNodeSelected;
 
-        // 載入中狀態變更時切換 LoadingOverlay
         _vm.IsLoadingChanged += isLoading =>
             LoadingOverlay.Visibility = isLoading ? Visibility.Visible : Visibility.Collapsed;
 
-        // GameLoop
         CompositionTarget.Rendering += OnGameLoopTick;
     }
 
@@ -60,7 +58,26 @@ public sealed partial class MainWindow : Window
         StatusText.Text = ok ? "DX12 Ready ✓" : "DX12 Init Failed ✗";
 
         if (ok)
-            _cameraInput = new CameraInputHandler(RenderPanel, _vm.Camera);
+        {
+            // 注入取得選取節點位置的回呼
+            _cameraInput = new CameraInputHandler(
+                RenderPanel,
+                _vm.Camera,
+                GetSelectedNodeWorldPosition);
+        }
+    }
+
+    /// <summary>
+    /// 提供給 CameraInputHandler 的回呼：
+    /// 回傳目前選取節點的世界 Translation，沒有選取則回傳 null。
+    /// </summary>
+    private Vector3? GetSelectedNodeWorldPosition()
+    {
+        var node = _vm.Hierarchy.SelectedNode;
+        if (node == null) return null;
+
+        var (t, _, _) = _vm.Renderer.GetNodeTransform(node.CppIndex);
+        return new Vector3(t[0], t[1], t[2]);
     }
 
     private void RenderPanel_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -86,7 +103,6 @@ public sealed partial class MainWindow : Window
         picker.FileTypeFilter.Add(".glb");
         picker.FileTypeFilter.Add(".obj");
 
-        // WinRT IAsyncOperation 需要 AsTask() 才能被 C# await
         var file = await picker.PickSingleFileAsync().AsTask();
         if (file == null) return;
 
