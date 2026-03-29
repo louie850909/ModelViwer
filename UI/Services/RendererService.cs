@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using WinRT;
@@ -18,7 +19,7 @@ internal sealed class RendererService : IDisposable
 
     public bool IsInitialized => _initialized;
 
-    // ── 生命週期 ─────────────────────────────────────────
+    // ── 生命週期 ───────────────────────────────────
 
     public bool Init(SwapChainPanel panel, int width, int height)
     {
@@ -40,15 +41,11 @@ internal sealed class RendererService : IDisposable
     {
         if (!_initialized) return;
 
-        // 計算出正確的實體像素 (Physical Pixels)
         int w = (int)(width * rasterizationScale);
         int h = (int)(height * rasterizationScale);
 
-        // 將實體尺寸與縮放比例一起傳給 C++
         if (w > 0 && h > 0)
-        {
             RenderBridge.Renderer_Resize(w, h, (float)rasterizationScale);
-        }
     }
 
     public void Shutdown()
@@ -66,7 +63,7 @@ internal sealed class RendererService : IDisposable
 
     public void Dispose() => Shutdown();
 
-    // ── 相機 ─────────────────────────────────────────────
+    // ── 相機 ─────────────────────────────────────────
 
     public void SetCamera(float px, float py, float pz, float pitch, float yaw)
     {
@@ -74,7 +71,7 @@ internal sealed class RendererService : IDisposable
             RenderBridge.Renderer_SetCameraTransform(px, py, pz, pitch, yaw);
     }
 
-    // ── 統計 ─────────────────────────────────────────────
+    // ── 統計 ─────────────────────────────────────────
 
     public (int vertices, int polygons, int drawCalls, float frameTimeMs) GetStats()
     {
@@ -83,7 +80,7 @@ internal sealed class RendererService : IDisposable
         return (v, p, dc, ft);
     }
 
-    // ── 模型載入 ─────────────────────────────────────────
+    // ── 模型載入 ───────────────────────────────────
 
     /// <summary>
     /// 非同步載入模型。載入完成後在呼叫端 await 處繼續執行。
@@ -91,8 +88,6 @@ internal sealed class RendererService : IDisposable
     public Task LoadModelAsync(string path)
     {
         var tcs = new TaskCompletionSource();
-
-        // 保留 Delegate 生命週期到 callback 被呼叫為止
         _loadCallback = new RenderBridge.LoadCallback(() => tcs.TrySetResult());
         RenderBridge.Renderer_LoadModel(path, _loadCallback);
         return tcs.Task;
@@ -123,4 +118,14 @@ internal sealed class RendererService : IDisposable
 
     public void SetNodeTransform(int index, float[] t, float[] r, float[] s)
         => RenderBridge.Renderer_SetNodeTransform(index, t, r, s);
+
+    /// <summary>
+    /// 批次將所有 dirty entries 刷入 C++，單次 P/Invoke。
+    /// 由 MainViewModel.Tick() 每幀呼叫。
+    /// </summary>
+    public void FlushNodeTransforms(NodeTransformBatcher batcher, List<NodeEntry> entries)
+    {
+        if (!_initialized || entries.Count == 0) return;
+        batcher.FlushToCpp(entries);
+    }
 }
