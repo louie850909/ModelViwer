@@ -113,4 +113,22 @@ extern "C" {
         }
     }
 
+    // [新增] Batch 更新所有 Node 的 Transform，單次 P/Invoke 傳入一維 float 陣列
+    // 每個 Node 佔 10 個 float，格式：T(3) + R(4) + S(3)
+    // data 指向 C# 端 GCHandle.Pinned 的記憶體，C++ 直接讀取，零拷貝
+    __declspec(dllexport) void Renderer_SetAllNodeTransforms(const float* data, int nodeCount) {
+        std::lock_guard<std::mutex> lock(g_renderer.m_renderMutex);
+        auto mesh = g_renderer.GetMesh();
+        if (!mesh || !data) return;
+
+        int count = min(nodeCount, (int)mesh->nodes.size());
+        for (int i = 0; i < count; i++) {
+            const float* p = data + i * 10;
+            auto& node = mesh->nodes[i];
+            node.t[0] = p[0]; node.t[1] = p[1]; node.t[2] = p[2];
+            node.r[0] = p[3]; node.r[1] = p[4]; node.r[2] = p[5]; node.r[3] = p[6];
+            node.s[0] = p[7]; node.s[1] = p[8]; node.s[2] = p[9];
+        }
+    }
+
 } // extern "C"

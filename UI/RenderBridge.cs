@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 
 namespace UI;
@@ -40,4 +40,12 @@ internal static class RenderBridge
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern void Renderer_SetNodeTransform(int index, float[] t, float[] r, float[] s);
+
+    /// <summary>
+    /// [新增] 批次更新所有 Node 的 Transform，單次 P/Invoke 傳入 pinned float 陣列指標。
+    /// 每個 Node 佔 10 個 float：Translation(3) + Rotation(4, quaternion) + Scale(3)。
+    /// 請透過 NodeTransformBatcher.FlushToCpp() 呼叫，不要直接使用。
+    /// </summary>
+    [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Renderer_SetAllNodeTransforms(IntPtr data, int nodeCount);
 }
