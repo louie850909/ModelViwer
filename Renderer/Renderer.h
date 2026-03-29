@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include "GBuffer.h"
 
 class Renderer {
 public:
@@ -39,6 +40,7 @@ private:
 
     GraphicsContext m_ctx;
     Scene m_scene;
+    GBuffer m_gBuffer;
 
     ComPtr<ID3D12RootSignature> m_rootSig;
     ComPtr<ID3D12PipelineState> m_psoOpaque;

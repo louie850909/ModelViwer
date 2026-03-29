@@ -24,6 +24,7 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
 
         CreateRootSignatureAndPSO();
         m_srvDescriptorSize = m_ctx.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_gBuffer.Init(m_ctx.GetDevice(), width, height);
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
         return true;
     }
@@ -32,12 +33,18 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
 
 void Renderer::Shutdown() {
     std::lock_guard<std::mutex> lock(m_renderMutex);
+    m_gBuffer.Shutdown();
     m_ctx.Shutdown();
 }
 
 void Renderer::Resize(int width, int height, float scale) {
     std::lock_guard<std::mutex> lock(m_renderMutex);
     m_ctx.Resize(width, height, scale);
+
+    if (m_ctx.GetDevice() != nullptr && width > 0 && height > 0) {
+        // 注意：Resize 時 m_ctx 內部會更新長寬，所以可以用 m_ctx.GetWidth() 取得真實像素大小
+        m_gBuffer.Resize(m_ctx.GetDevice(), m_ctx.GetWidth(), m_ctx.GetHeight());
+    }
 }
 
 void Renderer::GetStats(int& vertices, int& polygons, int& drawCalls, float& frameTimeMs) {

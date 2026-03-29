@@ -22,6 +22,9 @@
     <Filter Include="ソース ファイル\Scene">
       <UniqueIdentifier>{c0fd6db2-1b0c-4e17-b6df-58353f806ebe}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ソース ファイル\Resources">
+      <UniqueIdentifier>{aadb2eb4-d430-48a7-a408-4e1ac0455017}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -45,6 +48,9 @@
     <ClInclude Include="Scene.h">
       <Filter>ソース ファイル\Scene</Filter>
     </ClInclude>
+    <ClInclude Include="GBuffer.h">
+      <Filter>ソース ファイル\Resources</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -64,6 +70,9 @@
     </ClCompile>
     <ClCompile Include="Scene.cpp">
       <Filter>ソース ファイル\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="GBuffer.cpp">
+      <Filter>ソース ファイル\Resources</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

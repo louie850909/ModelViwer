@@ -22,6 +22,9 @@ public:
     D3D12_VIEWPORT GetViewport() const { return { 0, 0, (float)m_width, (float)m_height, 0, 1 }; }
     D3D12_RECT GetScissorRect() const { return { 0, 0, m_width, m_height }; }
 
+    int GetWidth() const { return m_width; }
+    int GetHeight() const { return m_height; }
+
 private:
     void CreateDeviceAndQueue();
     void CreateSwapChain(IUnknown* panelUnknown, int width, int height);

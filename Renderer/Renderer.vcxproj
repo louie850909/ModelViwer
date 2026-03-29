@@ -271,6 +271,7 @@ xcopy /Y /D /E /I "$(ProjectDir)shaders\*.cso" "$(SolutionDir)bin\$(Platform)\$(
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="GBuffer.h" />
     <ClInclude Include="GraphicsContext.h" />
     <ClInclude Include="Mesh.h" />
     <ClInclude Include="MeshLoader.h" />
@@ -280,6 +281,7 @@ xcopy /Y /D /E /I "$(ProjectDir)shaders\*.cso" "$(SolutionDir)bin\$(Platform)\$(
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="export.cpp" />
+    <ClCompile Include="GBuffer.cpp" />
     <ClCompile Include="GraphicsContext.cpp" />
     <ClCompile Include="MeshLoader.cpp" />
     <ClCompile Include="pch.cpp">
