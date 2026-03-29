@@ -78,8 +78,6 @@ float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
     float metallic = normalMetal.a;
     float3 P = worldPos.xyz;
 
-    // --- 這裡可以放入您原本 BaseColor_PS 裡面的 PBR 計算 ---
-    // 為了簡化展示，這裡使用簡單的 Blinn-Phong + 基礎環境光
     float3 V = normalize(cameraPos - P);
     float3 L = normalize(-lightDir); // 注意方向
     float3 H = normalize(V + L);
