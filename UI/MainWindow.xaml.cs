@@ -16,8 +16,8 @@ public sealed partial class MainWindow : Window
     private readonly MainViewModel _vm;
     private CameraInputHandler?    _cameraInput;
 
-    private readonly Dictionary<TreeViewNode, NodeItem> _nodeMap      = new();
-    private readonly Dictionary<int, List<TreeViewNode>> _meshRootNodes = new();
+    private readonly Dictionary<TreeViewNode, NodeItem>   _nodeMap       = new();
+    private readonly Dictionary<int, List<TreeViewNode>>  _meshRootNodes = new();
 
     public MainWindow()
     {
@@ -153,15 +153,11 @@ public sealed partial class MainWindow : Window
         ScaleZText.Text   = _vm.Transform.SZ.ToString("F3");
     }
 
-    // ── 右鍵選單倇除 ──────────────────────────────────
+    // ── 右鍵選單 ───────────────────────────────────────
 
-    /// <summary>
-    /// 在 TreeView 任意項目上右鍵→從 OriginalSource 往上尋找 TreeViewItem
-    /// →由 _nodeMap 找到 NodeItem →彈出 MenuFlyout。
-    /// </summary>
     private void HierarchyTree_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        // 1. 找到被點擊的 TreeViewItem
+        // 1. 從 OriginalSource 往上尋找 TreeViewItem
         var hit = e.OriginalSource as DependencyObject;
         TreeViewItem? tvi = null;
         while (hit != null) {
@@ -170,23 +166,23 @@ public sealed partial class MainWindow : Window
         }
         if (tvi == null) return;
 
-        // 2. 從 TreeViewItem.DataContext 取得 TreeViewNode
-        if (tvi.DataContext is not TreeViewNode treeNode) return;
+        // 2. 重點修正：TreeViewItem.DataContext 是 Content（string）
+        //    必須用 TreeView.NodeFromContainer() 反查 TreeViewNode
+        var treeNode = HierarchyTree.NodeFromContainer(tvi);
+        if (treeNode == null) return;
         if (!_nodeMap.TryGetValue(treeNode, out var nodeItem)) return;
 
-        // 3. 先選取該節點，讓 Inspector 同步更新
+        // 3. 選取該節點
         _vm.Hierarchy.SelectedNode = nodeItem;
 
         // 4. 建立選單
         var flyout = new MenuFlyout();
 
-        // 子節點：提示將倇除整個模型
         if (nodeItem.ParentIndex != -1) {
-            var info = new MenuFlyoutItem {
-                Text       = $"模型：{GetModelRootName(nodeItem.MeshId)}",
-                IsEnabled  = false,
-            };
-            flyout.Items.Add(info);
+            flyout.Items.Add(new MenuFlyoutItem {
+                Text      = $"模型：{GetModelRootName(nodeItem.MeshId)}",
+                IsEnabled = false,
+            });
             flyout.Items.Add(new MenuFlyoutSeparator());
         }
 
@@ -200,7 +196,6 @@ public sealed partial class MainWindow : Window
         e.Handled = true;
     }
 
-    /// <summary>得到指定 meshId 根節點的名稱。</summary>
     private string GetModelRootName(int meshId)
     {
         if (_meshRootNodes.TryGetValue(meshId, out var roots) && roots.Count > 0)
@@ -210,11 +205,8 @@ public sealed partial class MainWindow : Window
 
     private void DeleteModel(int meshId)
     {
-        // 1. C++ 渲染資料
         _vm.Renderer.RemoveModel(meshId);
-        // 2. ViewModel
         _vm.Hierarchy.RemoveMeshNodes(meshId);
-        // 3. TreeView UI
         if (_meshRootNodes.TryGetValue(meshId, out var roots)) {
             foreach (var r in roots) {
                 HierarchyTree.RootNodes.Remove(r);
@@ -222,12 +214,10 @@ public sealed partial class MainWindow : Window
             }
             _meshRootNodes.Remove(meshId);
         }
-        // 4. 清除選取狀態
         if (_vm.Hierarchy.SelectedNode?.MeshId == meshId)
             _vm.Hierarchy.SelectedNode = null;
     }
 
-    /// <summary>遞迴清除 _nodeMap 內屬於指定樹的所有記錄。</summary>
     private void RemoveFromNodeMap(TreeViewNode node)
     {
         _nodeMap.Remove(node);
