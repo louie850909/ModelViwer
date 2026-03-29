@@ -36,15 +36,20 @@ public:
     std::shared_ptr<Mesh> GetMesh() const { return m_scene.GetMesh(); }
 
 private:
-    void CreateRootSignatureAndPSO();
+    void CreateRootSignaturesAndPSOs(); // 改名為複數
 
     GraphicsContext m_ctx;
     Scene m_scene;
     GBuffer m_gBuffer;
 
-    ComPtr<ID3D12RootSignature> m_rootSig;
-    ComPtr<ID3D12PipelineState> m_psoOpaque;
-    ComPtr<ID3D12PipelineState> m_psoTransparent;
+    // Geometry Pass 資源
+    ComPtr<ID3D12RootSignature> m_geomRootSig;
+    ComPtr<ID3D12PipelineState> m_geomPSO;
+
+    // Lighting Pass 資源
+    ComPtr<ID3D12RootSignature> m_lightRootSig;
+    ComPtr<ID3D12PipelineState> m_lightPSO;
+
     UINT m_srvDescriptorSize = 0;
 
     std::atomic<int>   m_statVertices{ 0 };

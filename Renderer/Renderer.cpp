@@ -22,7 +22,7 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
     try {
         if (!m_ctx.Init(panelUnknown, width, height)) return false;
 
-        CreateRootSignatureAndPSO();
+        CreateRootSignaturesAndPSOs();
         m_srvDescriptorSize = m_ctx.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_gBuffer.Init(m_ctx.GetDevice(), width, height);
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
@@ -68,21 +68,35 @@ void Renderer::RenderFrame() {
 
     m_renderMutex.lock();
 
-    // 1. 初始化 Frame 狀態
     m_ctx.ResetCommandList();
-    float clearColor[] = { 0.2f, 0.2f, 0.2f, 1.0f };
-    m_ctx.SetRenderTargetsAndClear(clearColor);
-
     auto cmdList = m_ctx.GetCommandList();
     auto vp = m_ctx.GetViewport();
     auto sc = m_ctx.GetScissorRect();
-
     cmdList->RSSetViewports(1, &vp);
     cmdList->RSSetScissorRects(1, &sc);
-    cmdList->SetGraphicsRootSignature(m_rootSig.Get());
+
+    // ==========================================
+    // 通道 1：Geometry Pass
+    // ==========================================
+    // 綁定 G-Buffer RTVs 與 DSV
+    D3D12_CPU_DESCRIPTOR_HANDLE gbufferRTVs = m_gBuffer.GetRtvStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_ctx.GetDSV();
+    cmdList->OMSetRenderTargets(3, &gbufferRTVs, TRUE, &dsv);
+
+    // 清除 G-Buffer 與 Depth
+    float clearGBuffer[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gbufferRTVs);
+    for (int i = 0; i < 3; ++i) {
+        cmdList->ClearRenderTargetView(rtvHandle, clearGBuffer, 0, nullptr);
+        rtvHandle.Offset(1, m_ctx.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
+    }
+    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    cmdList->SetGraphicsRootSignature(m_geomRootSig.Get());
+    cmdList->SetPipelineState(m_geomPSO.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // 2. 準備相機矩陣
+    // 準備相機矩陣
     using namespace DirectX;
     XMMATRIX rotation = XMMatrixRotationRollPitchYaw(m_scene.GetPitch(), m_scene.GetYaw(), 0.0f);
     XMVECTOR eye = XMLoadFloat3(&m_scene.GetCameraPos());
@@ -91,7 +105,7 @@ void Renderer::RenderFrame() {
     XMMATRIX view = XMMatrixLookAtLH(eye, eye + forward, up);
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
 
-    // 3. 繪製邏輯
+    // 繪製 Opaque 物件
     for (auto& inst : m_scene.GetMeshes()) {
         auto& mesh = inst.mesh;
         if (!mesh) continue;
@@ -111,59 +125,87 @@ void Renderer::RenderFrame() {
 
         cmdList->IASetVertexBuffers(0, 1, &mesh->vbView);
         cmdList->IASetIndexBuffer(&mesh->ibView);
-
         ID3D12DescriptorHeap* heaps[] = { inst.srvHeap.Get() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        auto drawPass = [&](bool drawTransparent) {
-            for (size_t n = 0; n < mesh->nodes.size(); ++n) {
-                const auto& node = mesh->nodes[n];
-                if (node.subMeshIndices.empty()) continue;
+        for (size_t n = 0; n < mesh->nodes.size(); ++n) {
+            const auto& node = mesh->nodes[n];
+            if (node.subMeshIndices.empty()) continue;
 
-                XMMATRIX modelMat = globalTransforms[n];
+            XMMATRIX modelMat = globalTransforms[n];
+            SceneConstants cb = {};
+            XMStoreFloat4x4(&cb.mvp, XMMatrixTranspose(modelMat * view * proj));
+            XMStoreFloat4x4(&cb.modelMatrix, XMMatrixTranspose(modelMat));
+            XMStoreFloat4x4(&cb.normalMatrix, XMMatrixInverse(nullptr, modelMat)); // 未考慮非等比縮放
+            XMStoreFloat3(&cb.lightDir, XMVector3Normalize(forward));
+            cb.cameraPos = m_scene.GetCameraPos();
+            cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
 
-                SceneConstants cb = {};
-                XMStoreFloat4x4(&cb.mvp, XMMatrixTranspose(modelMat * view * proj));
-                XMStoreFloat4x4(&cb.modelMatrix, XMMatrixTranspose(modelMat));
-                XMStoreFloat4x4(&cb.normalMatrix, XMMatrixInverse(nullptr, modelMat));
-                XMStoreFloat3(&cb.lightDir, XMVector3Normalize(forward));
-                cb.baseColor = { 0.8f, 0.6f, 0.4f, 1.0f };
-                cb.cameraPos = m_scene.GetCameraPos();
+            for (int subIdx : node.subMeshIndices) {
+                const auto& sub = mesh->subMeshes[subIdx];
+                if (sub.isTransparent) continue; // 延遲渲染第一階段只畫不透明物
 
-                cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
-
-                for (int subIdx : node.subMeshIndices) {
-                    const auto& sub = mesh->subMeshes[subIdx];
-                    if (sub.isTransparent != drawTransparent) continue;
-
-                    int matIdx = (sub.materialIndex >= 0 && sub.materialIndex < (int)mesh->texturePaths.size())
-                        ? sub.materialIndex : 0;
-                    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(
-                        inst.srvHeap->GetGPUDescriptorHandleForHeapStart(),
-                        matIdx * 2, m_srvDescriptorSize);
-
-                    cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
-                    cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
-                    currentDrawCalls++;
-                }
+                int matIdx = (sub.materialIndex >= 0 && sub.materialIndex < (int)mesh->texturePaths.size()) ? sub.materialIndex : 0;
+                CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(inst.srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx * 2, m_srvDescriptorSize);
+                cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
+                cmdList->DrawIndexedInstanced(sub.indexCount, 1, sub.indexOffset, 0, 0);
+                currentDrawCalls++;
             }
-            };
-
-        cmdList->SetPipelineState(m_psoOpaque.Get());
-        drawPass(false);
-
-        cmdList->SetPipelineState(m_psoTransparent.Get());
-        drawPass(true);
-
+        }
         totalVerts += (int)mesh->vertices.size();
         totalPolys += (int)mesh->indices.size() / 3;
     }
 
+    // ==========================================
+        // 轉換 G-Buffer 狀態 (RENDER_TARGET -> SRV)
+        // ==========================================
+    D3D12_RESOURCE_BARRIER barriersToSRV[3] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetWorldPos(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+    };
+    cmdList->ResourceBarrier(3, barriersToSRV);
+
+    // ==========================================
+    // 通道 2：Lighting Pass
+    // ==========================================
+    // 取得並綁定 BackBuffer
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV = m_ctx.GetCurrentBackBufferRTV();
+    cmdList->OMSetRenderTargets(1, &backBufferRTV, FALSE, nullptr);
+
+    cmdList->SetGraphicsRootSignature(m_lightRootSig.Get());
+    cmdList->SetPipelineState(m_lightPSO.Get());
+
+    // 綁定 G-Buffer 的 SRV (準備給 Shader 讀取)
+    ID3D12DescriptorHeap* gbufferHeaps[] = { m_gBuffer.GetSrvHeap() };
+    cmdList->SetDescriptorHeaps(1, gbufferHeaps);
+
+    SceneConstants lightCb = {};
+    lightCb.cameraPos = m_scene.GetCameraPos();
+    XMStoreFloat3(&lightCb.lightDir, XMVector3Normalize(forward));
+    cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &lightCb, 0);
+
+    cmdList->SetGraphicsRootDescriptorTable(1, m_gBuffer.GetSrvStart());
+
+    // 繪製全螢幕四邊形 (3個頂點產生一個包含整個螢幕的三角形)
+    cmdList->DrawInstanced(3, 1, 0, 0);
+    currentDrawCalls++;
+
+    // ==========================================
+    // 轉換 G-Buffer 狀態 (SRV -> RENDER_TARGET) 供下一幀使用
+    // ==========================================
+    D3D12_RESOURCE_BARRIER barriersToRTV[3] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetAlbedo(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetNormal(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_gBuffer.GetWorldPos(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
+    };
+    cmdList->ResourceBarrier(3, barriersToRTV);
+
+    // 更新統計數據與送出
     m_statVertices.store(totalVerts, std::memory_order_relaxed);
     m_statPolygons.store(totalPolys, std::memory_order_relaxed);
     m_statDrawCalls.store(currentDrawCalls, std::memory_order_relaxed);
 
-    // 4. 送出與呈現
     m_ctx.ExecuteCommandListAndPresent();
     m_renderMutex.unlock();
 }
@@ -331,32 +373,33 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh, int meshId) {
 }
 
 // ---------------------------------------------------------------------------
-// CreateRootSignatureAndPSO
+// CreateRootSignatureAndPSOs
 // ---------------------------------------------------------------------------
-void Renderer::CreateRootSignatureAndPSO() {
+void Renderer::CreateRootSignaturesAndPSOs() {
     auto device = m_ctx.GetDevice();
 
-    CD3DX12_DESCRIPTOR_RANGE1 srvRange;
-    srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
-    CD3DX12_ROOT_PARAMETER1 rootParameters[2];
-    rootParameters[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);
-    rootParameters[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    // ==========================================
+    // 1. Geometry Pass Root Signature & PSO
+    // ==========================================
+    CD3DX12_DESCRIPTOR_RANGE1 geomSrvRange;
+    geomSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0); // 貼圖：BaseColor, MR
+    CD3DX12_ROOT_PARAMETER1 geomParams[2];
+    geomParams[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);
+    geomParams[1].InitAsDescriptorTable(1, &geomSrvRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_ANISOTROPIC);
     sampler.MaxAnisotropy = 16;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
-    rsDesc.Init_1_1(2, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC geomRsDesc;
+    geomRsDesc.Init_1_1(2, geomParams, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
     ComPtr<ID3DBlob> sigBlob, errBlob;
-    CHECK(D3DX12SerializeVersionedRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob));
-    CHECK(device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+    D3DX12SerializeVersionedRootSignature(&geomRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob);
+    device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_geomRootSig));
 
-    ComPtr<ID3DBlob> vsBlob, psBlob;
-    CHECK(D3DReadFileToBlob(GetShaderPath(L"BaseColor_VS.cso").c_str(), &vsBlob));
-    CHECK(D3DReadFileToBlob(GetShaderPath(L"BaseColor_PS.cso").c_str(), &psBlob));
+    ComPtr<ID3DBlob> geomVS, geomPS;
+    D3DReadFileToBlob(GetShaderPath(L"GBuffer_VS.cso").c_str(), &geomVS);
+    D3DReadFileToBlob(GetShaderPath(L"GBuffer_PS.cso").c_str(), &geomPS);
 
     D3D12_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -364,36 +407,62 @@ void Renderer::CreateRootSignatureAndPSO() {
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = { layout, _countof(layout) };
-    psoDesc.pRootSignature = m_rootSig.Get();
-    psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-    psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    psoDesc.SampleDesc.Count = 1;
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC geomPsoDesc = {};
+    geomPsoDesc.InputLayout = { layout, _countof(layout) };
+    geomPsoDesc.pRootSignature = m_geomRootSig.Get();
+    geomPsoDesc.VS = CD3DX12_SHADER_BYTECODE(geomVS.Get());
+    geomPsoDesc.PS = CD3DX12_SHADER_BYTECODE(geomPS.Get());
+    geomPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    geomPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    geomPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT); // 不混色
+    geomPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT); // 開啟深度
+    geomPsoDesc.SampleMask = UINT_MAX;
+    geomPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    // 輸出到 G-Buffer 的 3 個 Render Targets
+    geomPsoDesc.NumRenderTargets = 3;
+    geomPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    geomPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    geomPsoDesc.RTVFormats[2] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    geomPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    geomPsoDesc.SampleDesc.Count = 1;
+    device->CreateGraphicsPipelineState(&geomPsoDesc, IID_PPV_ARGS(&m_geomPSO));
 
-    CHECK(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_psoOpaque)));
+    // ==========================================
+    // 2. Lighting Pass Root Signature & PSO
+    // ==========================================
+    CD3DX12_DESCRIPTOR_RANGE1 lightSrvRange;
+    lightSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // 讀取 3 張 G-Buffer
+    CD3DX12_ROOT_PARAMETER1 lightParams[2];
+    lightParams[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);
+    lightParams[1].InitAsDescriptorTable(1, &lightSrvRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    D3D12_BLEND_DESC blendDesc = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    blendDesc.RenderTarget[0].BlendEnable = TRUE;
-    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
-    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    CD3DX12_STATIC_SAMPLER_DESC lightSampler(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+    lightSampler.AddressU = lightSampler.AddressV = lightSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
 
-    psoDesc.BlendState = blendDesc;
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    CHECK(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_psoTransparent)));
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC lightRsDesc;
+    lightRsDesc.Init_1_1(2, lightParams, 1, &lightSampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    D3DX12SerializeVersionedRootSignature(&lightRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob);
+    device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_lightRootSig));
+
+    ComPtr<ID3DBlob> lightVS, lightPS;
+    D3DReadFileToBlob(GetShaderPath(L"DeferredLight_VS.cso").c_str(), &lightVS);
+    D3DReadFileToBlob(GetShaderPath(L"DeferredLight_PS.cso").c_str(), &lightPS);
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC lightPsoDesc = {};
+    lightPsoDesc.pRootSignature = m_lightRootSig.Get();
+    lightPsoDesc.VS = CD3DX12_SHADER_BYTECODE(lightVS.Get());
+    lightPsoDesc.PS = CD3DX12_SHADER_BYTECODE(lightPS.Get());
+    lightPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    lightPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    lightPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    // 關閉深度測試 (全螢幕四邊形不需要)
+    lightPsoDesc.DepthStencilState.DepthEnable = FALSE;
+    lightPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    lightPsoDesc.SampleMask = UINT_MAX;
+    lightPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    // 輸出到 BackBuffer
+    lightPsoDesc.NumRenderTargets = 1;
+    lightPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    lightPsoDesc.SampleDesc.Count = 1;
+    device->CreateGraphicsPipelineState(&lightPsoDesc, IID_PPV_ARGS(&m_lightPSO));
 }

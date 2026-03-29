@@ -14,6 +14,15 @@ public:
     ID3D12GraphicsCommandList* GetCommandList() const { return m_cmdList.Get(); }
     ID3D12CommandQueue* GetCommandQueue() const { return m_cmdQueue.Get(); }
 
+    // 取得當前 BackBuffer 的 RTV
+    D3D12_CPU_DESCRIPTOR_HANDLE GetCurrentBackBufferRTV() const {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), m_frameIndex, m_rtvDescSize);
+    }
+    // 取得 Depth Stencil View
+    D3D12_CPU_DESCRIPTOR_HANDLE GetDSV() const {
+        return m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    }
+
     // 渲染迴圈控制
     void ResetCommandList();
     void SetRenderTargetsAndClear(const float clearColor[4]);
