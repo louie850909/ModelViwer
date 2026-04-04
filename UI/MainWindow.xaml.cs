@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using UI.Controls;
 using UI.Input;
 using UI.ViewModels;
 using Windows.System;
@@ -28,9 +29,39 @@ public sealed partial class MainWindow : Window
         _vm.IsLoadingChanged += isLoading =>
             LoadingOverlay.Visibility = isLoading ? Visibility.Visible : Visibility.Collapsed;
         CompositionTarget.Rendering += OnGameLoopTick;
+
+        // ── 綁定 DragNumberLabel ────────────────────────────────────────────────────
+        BindDragLabel(DragPosX,   PosXText,   () => _vm.Transform.PX, 0.01f);
+        BindDragLabel(DragPosY,   PosYText,   () => _vm.Transform.PY, 0.01f);
+        BindDragLabel(DragPosZ,   PosZText,   () => _vm.Transform.PZ, 0.01f);
+        BindDragLabel(DragRotX,   RotXText,   () => _vm.Transform.RX, 0.5f);
+        BindDragLabel(DragRotY,   RotYText,   () => _vm.Transform.RY, 0.5f);
+        BindDragLabel(DragRotZ,   RotZText,   () => _vm.Transform.RZ, 0.5f);
+        BindDragLabel(DragScaleX, ScaleXText, () => _vm.Transform.SX, 0.005f);
+        BindDragLabel(DragScaleY, ScaleYText, () => _vm.Transform.SY, 0.005f);
+        BindDragLabel(DragScaleZ, ScaleZText, () => _vm.Transform.SZ, 0.005f);
     }
 
-    // ── GameLoop ─────────────────────────────────────────
+    /// <summary>
+    /// 將一個 DragNumberLabel 與目標 TextBox 綁定：
+    /// 拖曳 Label → 更新 TextBox 文字 → 呼叫 ApplyTransform。
+    /// </summary>
+    private void BindDragLabel(
+        DragNumberLabel label,
+        TextBox target,
+        Func<float> getValue,
+        float sensitivity)
+    {
+        label.GetCurrentValue = getValue;
+        label.DragSensitivity = sensitivity;
+        label.ValueChanged += newVal =>
+        {
+            target.Text = newVal.ToString("F3");
+            ApplyTransform();
+        };
+    }
+
+    // ── GameLoop ─────────────────────────────────────────────────────────────
     private void OnGameLoopTick(object? sender, object e)
     {
         if (!_vm.Renderer.IsInitialized) return;
@@ -39,7 +70,7 @@ public sealed partial class MainWindow : Window
         StatsText.Text = _vm.Stats.DisplayText;
     }
 
-    // ── Renderer 生命週期 ─────────────────────────────────
+    // ── Renderer 生命週期 ─────────────────────────────────────────────────────
     private void RenderPanel_Loaded(object sender, RoutedEventArgs e)
     {
         double scale = RenderPanel.XamlRoot.RasterizationScale;
@@ -75,7 +106,7 @@ public sealed partial class MainWindow : Window
     private void RenderPanel_Unloaded(object sender, RoutedEventArgs e)
         => _vm.Renderer.Shutdown();
 
-    // ── 模型載入 ───────────────────────────────────────
+    // ── 模型載入 ───────────────────────────────────────────────────────────
     private async void OpenModel_Click(object sender, RoutedEventArgs e)
     {
         if (!_vm.Renderer.IsInitialized) return;
@@ -137,7 +168,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    // ── Hierarchy 選取 ─────────────────────────────────────
+    // ── Hierarchy 選取 ─────────────────────────────────────────────────────────
     private void HierarchyTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
         if (args.InvokedItem is TreeViewNode treeNode &&
@@ -164,7 +195,6 @@ public sealed partial class MainWindow : Window
         ScaleYText.Text = _vm.Transform.SY.ToString("F3");
         ScaleZText.Text = _vm.Transform.SZ.ToString("F3");
 
-        // 屬性面板同步：若為光源節點，顯示光源屬性面板並填入數值
         LightSettingsPanel.Visibility = node.IsLight ? Visibility.Visible : Visibility.Collapsed;
         if (node.IsLight)
         {
@@ -177,11 +207,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    // ── 右鍵選單 ───────────────────────────────────────
-
+    // ── 右鍵選單 ─────────────────────────────────────────────────────────────
     private void HierarchyTree_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        // 1. 從 OriginalSource 往上尋找 TreeViewItem
         var hit = e.OriginalSource as DependencyObject;
         TreeViewItem? tvi = null;
         while (hit != null)
@@ -190,7 +218,6 @@ public sealed partial class MainWindow : Window
             hit = VisualTreeHelper.GetParent(hit);
         }
 
-        // 如果點在空白處 (tvi 為 null)，顯示新增光源選單
         if (tvi == null)
         {
             var addLightFlyout = new MenuFlyout();
@@ -213,15 +240,12 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // 2. 透過 TreeViewItem 反查 TreeViewNode
         var treeNode = HierarchyTree.NodeFromContainer(tvi);
         if (treeNode == null) return;
         if (!_nodeMap.TryGetValue(treeNode, out var nodeItem)) return;
 
-        // 3. 選取該節點
         _vm.Hierarchy.SelectedNode = nodeItem;
 
-        // 4. 建立節點特定選單
         var flyout = new MenuFlyout();
 
         if (nodeItem.IsLight)
@@ -285,8 +309,7 @@ public sealed partial class MainWindow : Window
             RemoveFromNodeMap(child);
     }
 
-    // ── 光源特定邏輯 ─────────────────────────────────────
-
+    // ── 光源特定進入難 ─────────────────────────────────────────────────────────
     private void AddLight(int type)
     {
         int id = _vm.Renderer.AddLight(type);
@@ -332,7 +355,7 @@ public sealed partial class MainWindow : Window
         _vm.Transform.Apply();
     }
 
-    // ── Transform Inspector ─────────────────────────────────
+    // ── Transform Inspector ───────────────────────────────────────────────────────
     private void TransformInput_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (e.Key == VirtualKey.Enter) ApplyTransform();
@@ -349,7 +372,7 @@ public sealed partial class MainWindow : Window
             ScaleXText.Text, ScaleYText.Text, ScaleZText.Text);
     }
 
-    // ── 工具 ─────────────────────────────────────────────
+    // ── 工具 ────────────────────────────────────────────────────────────────────
     private IEnumerable<NodeItem> GetNodesForMesh(int meshId)
         => _nodeMap.Values.Where(n => n.MeshId == meshId);
 }

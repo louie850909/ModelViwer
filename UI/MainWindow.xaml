@@ -1,6 +1,7 @@
 <Window x:Class="UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="using:UI.Controls"
         Title="Model Viewer">
     <Grid>
         <Grid.ColumnDefinitions>
@@ -59,51 +60,51 @@
                 <TextBlock Text="Position (座標)" Foreground="#888888" FontSize="12" Margin="0,0,0,4"/>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="X:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragPosX" Text="X:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="PosXText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Y:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragPosY" Text="Y:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="PosYText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,16">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Z:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragPosZ" Text="Z:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="PosZText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Rotation (Euler 度數)" Foreground="#888888" FontSize="12" Margin="0,0,0,4"/>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="X:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragRotX" Text="X:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="RotXText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Y:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragRotY" Text="Y:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="RotYText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,16">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Z:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragRotZ" Text="Z:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="RotZText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Scale (縮放)" Foreground="#888888" FontSize="12" Margin="0,0,0,4"/>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="X:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragScaleX" Text="X:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="ScaleXText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Y:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragScaleY" Text="Y:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="ScaleYText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <Grid Margin="0,0,0,16">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Z:" VerticalAlignment="Center" Foreground="#888888"/>
+                    <ctrl:DragNumberLabel x:Name="DragScaleZ" Text="Z:" Width="20" VerticalAlignment="Center"/>
                     <TextBox x:Name="ScaleZText" Grid.Column="1" LostFocus="TransformInput_LostFocus" KeyDown="TransformInput_KeyDown"/>
                 </Grid>
                 <StackPanel x:Name="LightSettingsPanel" Visibility="Collapsed" Margin="0,16,0,0">
