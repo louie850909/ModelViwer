@@ -37,8 +37,12 @@ public:
     LightNode* GetLight(int id) { return m_scene.GetLight(id); }
     const std::vector<LightNode>& GetLights() const { return m_scene.GetLights(); }
 
+    void SetRayTracingEnabled(bool enable) { m_rayTracingEnabled = enable; }
+
 private:
     void UpdateLightBuffer();
+
+    bool m_rayTracingEnabled = false;
 
     GraphicsContext m_ctx;
     Scene m_scene;

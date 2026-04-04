@@ -137,6 +137,15 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // ── Ray Tracing 切換 ─────────────────────────────────────
+    private void RayTracingToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_vm.Renderer.IsInitialized)
+        {
+            _vm.Renderer.SetRayTracingEnabled(RayTracingToggle.IsOn);
+        }
+    }
+
     // ── Hierarchy 選取 ─────────────────────────────────────
     private void HierarchyTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {

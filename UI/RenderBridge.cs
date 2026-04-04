@@ -74,6 +74,10 @@ internal static class RenderBridge
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern bool Renderer_SetLight(int id, int type, float intensity, float coneAngle, float[] color, float[] pos, float[] dir);
 
+    // ── 渲染設定 ──────────────────────────────────────────────
+    [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Renderer_SetRayTracingEnabled(bool enable);
+
     /// <summary>
     /// 批次更新所有 Node Transform。
     /// 每個 entry 檔式：[globalIndex(float), tx, ty, tz, rx, ry, rz, rw, sx, sy, sz] = 11 floats

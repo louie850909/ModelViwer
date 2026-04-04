@@ -151,4 +151,13 @@ internal sealed class RendererService : IDisposable
         if (!_initialized) return false;
         return RenderBridge.Renderer_SetLight(id, type, intensity, coneAngle, color, pos, dir);
     }
+
+    // ── 渲染設定 ──────────────────────────────────────────────
+    public void SetRayTracingEnabled(bool enable)
+    {
+        if (_initialized)
+        {
+            RenderBridge.Renderer_SetRayTracingEnabled(enable);
+        }
+    }
 }

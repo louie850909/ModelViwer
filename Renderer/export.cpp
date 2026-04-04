@@ -141,6 +141,11 @@ extern "C" {
         }
     }
 
+	// Ray Tracing 開關
+    __declspec(dllexport) void Renderer_SetRayTracingEnabled(bool enable) {
+        g_renderer.SetRayTracingEnabled(enable);
+    }
+
     // ---------------------------------------------------------------------------
     // 光源管理 API (Light System)
     // ---------------------------------------------------------------------------
