@@ -9,29 +9,31 @@ public:
     void Resize(int width, int height, float scale);
     void WaitForGpu();
 
-    // 取得底層資源
-    ID3D12Device* GetDevice() const { return m_device.Get(); }
-    ID3D12GraphicsCommandList* GetCommandList() const { return m_cmdList.Get(); }
-    ID3D12CommandQueue* GetCommandQueue() const { return m_cmdQueue.Get(); }
+    ID3D12Device*              GetDevice()       const { return m_device.Get(); }
+    ID3D12GraphicsCommandList* GetCommandList()  const { return m_cmdList.Get(); }
+    ID3D12CommandQueue*        GetCommandQueue() const { return m_cmdQueue.Get(); }
 
-    // 取得當前 BackBuffer 的 RTV
     D3D12_CPU_DESCRIPTOR_HANDLE GetCurrentBackBufferRTV() const {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), m_frameIndex, m_rtvDescSize);
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_frameIndex, m_rtvDescSize);
     }
-    // 取得 Depth Stencil View
     D3D12_CPU_DESCRIPTOR_HANDLE GetDSV() const {
         return m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
     }
 
-    // 渲染迴圈控制
+    // Expose the raw depth buffer resource so callers can create a depth SRV.
+    // The resource format is D32_FLOAT (typeless-read as R32_FLOAT for SRV).
+    ID3D12Resource* GetDepthBuffer() const { return m_depthStencil.Get(); }
+
     void ResetCommandList();
     void SetRenderTargetsAndClear(const float clearColor[4]);
     void ExecuteCommandListAndPresent();
 
-    D3D12_VIEWPORT GetViewport() const { return { 0, 0, (float)m_width, (float)m_height, 0, 1 }; }
-    D3D12_RECT GetScissorRect() const { return { 0, 0, m_width, m_height }; }
+    D3D12_VIEWPORT GetViewport()    const { return { 0, 0, (float)m_width, (float)m_height, 0, 1 }; }
+    D3D12_RECT     GetScissorRect() const { return { 0, 0, m_width, m_height }; }
 
-    int GetWidth() const { return m_width; }
+    int GetWidth()  const { return m_width; }
     int GetHeight() const { return m_height; }
 
 private:
@@ -52,11 +54,11 @@ private:
     ComPtr<ID3D12Resource>            m_depthStencil;
     ComPtr<ID3D12DescriptorHeap>      m_dsvHeap;
 
-    UINT m_rtvDescSize = 0;
-    UINT m_frameIndex = 0;
-    HANDLE m_fenceEvent = nullptr;
+    UINT   m_rtvDescSize       = 0;
+    UINT   m_frameIndex        = 0;
+    HANDLE m_fenceEvent        = nullptr;
     UINT64 m_fenceValues[FRAME_COUNT] = {};
     UINT64 m_currentFenceValue = 0;
-    int m_width = 0;
-    int m_height = 0;
+    int    m_width  = 0;
+    int    m_height = 0;
 };
