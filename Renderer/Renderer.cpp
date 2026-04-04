@@ -75,7 +75,7 @@ void Renderer::GetStats(int& vertices, int& polygons, int& drawCalls, float& fra
 // CreateLightBuffer — upload heap, persistently mapped
 // ---------------------------------------------------------------------------
 void Renderer::CreateLightBuffer() {
-    UINT64 size = (sizeof(LightBufferCPU) + 255) & ~255ULL; // 256-byte align
+    UINT64 size = (sizeof(LightBufferCPU) + 255) & ~255ULL;
     auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     auto bufDesc   = CD3DX12_RESOURCE_DESC::Buffer(size);
     CHECK(m_ctx.GetDevice()->CreateCommittedResource(
@@ -84,14 +84,13 @@ void Renderer::CreateLightBuffer() {
         IID_PPV_ARGS(&m_lightBuffer)));
     m_lightBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_lightBufferMapped));
 
-    // Default: one directional light pointing down-forward
     memset(m_lightBufferMapped, 0, sizeof(LightBufferCPU));
-    m_lightBufferMapped->numLights      = 1;
-    m_lightBufferMapped->lights[0].type      = 0;   // Directional
-    m_lightBufferMapped->lights[0].intensity  = 1.0f;
-    m_lightBufferMapped->lights[0].color[0]   = 1.0f;
-    m_lightBufferMapped->lights[0].color[1]   = 1.0f;
-    m_lightBufferMapped->lights[0].color[2]   = 1.0f;
+    m_lightBufferMapped->numLights              = 1;
+    m_lightBufferMapped->lights[0].type         = 0;    // Directional
+    m_lightBufferMapped->lights[0].intensity    = 1.0f;
+    m_lightBufferMapped->lights[0].color[0]     = 1.0f;
+    m_lightBufferMapped->lights[0].color[1]     = 1.0f;
+    m_lightBufferMapped->lights[0].color[2]     = 1.0f;
     m_lightBufferMapped->lights[0].direction[0] =  0.3f;
     m_lightBufferMapped->lights[0].direction[1] = -1.0f;
     m_lightBufferMapped->lights[0].direction[2] =  0.5f;
@@ -232,11 +231,11 @@ void Renderer::RenderFrame() {
 
     // slot 0: b0 LightPassConstants (8 DWORD)
     LightPassConstants lightPassCb = {};
-    lightPassCb.cameraPos   = m_scene.GetCameraPos();
+    lightPassCb.cameraPos = m_scene.GetCameraPos();
     XMStoreFloat3(&lightPassCb.mainLightDir, XMVector3Normalize(forward));
     cmdList->SetGraphicsRoot32BitConstants(0, sizeof(LightPassConstants) / 4, &lightPassCb, 0);
 
-    // slot 1: t0-t2 GBuffer SRVs (descriptor table)
+    // slot 1: t0-t2 GBuffer SRVs
     cmdList->SetGraphicsRootDescriptorTable(1, m_gBuffer.GetSrvStart());
 
     // slot 2: b1 LightBuffer CBV
@@ -310,6 +309,9 @@ void Renderer::RenderFrame() {
             XMStoreFloat3(&cb.lightDir,       XMVector3Normalize(forward));
             cb.cameraPos = m_scene.GetCameraPos();
             cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
+
+            // slot 2: b1 LightBuffer (shared upload heap with Lighting Pass)
+            cmdList->SetGraphicsRootConstantBufferView(2, m_lightBuffer->GetGPUVirtualAddress());
 
             for (int subIdx : node.subMeshIndices) {
                 const auto& sub = mesh->subMeshes[subIdx];
@@ -564,26 +566,20 @@ void Renderer::CreateRootSignaturesAndPSOs() {
 
     // ==========================================
     // 2. Lighting Pass Root Signature & PSO
-    //
-    //  slot 0: b0  LightPassConstants  (InitAsConstants, 8 DWORD)
-    //  slot 1: t0-t2  GBuffer SRVs     (DescriptorTable, 1 DWORD)
-    //  slot 2: b1  LightBuffer         (InitAsConstantBufferView, 2 DWORD)
-    //  slot 3: b2  ReconstructConstants(InitAsConstants, 16 DWORD)
-    //  Total: 8+1+2+16 = 27 DWORD  (limit: 64)
+    //  slot 0: b0  LightPassConstants (8 DWORD)
+    //  slot 1: t0-t2 GBuffer SRVs     (1 DWORD)
+    //  slot 2: b1  LightBuffer CBV    (2 DWORD)
+    //  slot 3: b2  invViewProj        (16 DWORD)
+    //  Total: 27 DWORD
     // ==========================================
     CD3DX12_DESCRIPTOR_RANGE1 lightSrvRange;
-    lightSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // t0 albedo, t1 normal, t2 depth
+    lightSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
 
     CD3DX12_ROOT_PARAMETER1 lightParams[4];
-    lightParams[0].InitAsConstants(sizeof(LightPassConstants) / 4, 0, 0,  // b0: 8 DWORD
-        D3D12_SHADER_VISIBILITY_PIXEL);
-    lightParams[1].InitAsDescriptorTable(1, &lightSrvRange,               // t0-t2
-        D3D12_SHADER_VISIBILITY_PIXEL);
-    lightParams[2].InitAsConstantBufferView(1, 0,                         // b1: LightBuffer CBV
-        D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
-        D3D12_SHADER_VISIBILITY_PIXEL);
-    lightParams[3].InitAsConstants(16, 2, 0,                              // b2: invViewProj 16 DWORD
-        D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[0].InitAsConstants(sizeof(LightPassConstants) / 4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[1].InitAsDescriptorTable(1, &lightSrvRange,               D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[2].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[3].InitAsConstants(16, 2, 0,                              D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC lightSampler(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
     lightSampler.AddressU = lightSampler.AddressV = lightSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -615,23 +611,30 @@ void Renderer::CreateRootSignaturesAndPSOs() {
     CHECK(device->CreateGraphicsPipelineState(&lightPsoDesc, IID_PPV_ARGS(&m_lightPSO)));
 
     // ==========================================
-    // 3. Forward Transparent Pass
+    // 3. Forward Transparent Pass Root Signature & PSO
+    //  slot 0: b0  SceneConstants (60 DWORD)
+    //  slot 1: t0-t1 material SRVs (1 DWORD)
+    //  slot 2: b1  LightBuffer CBV (2 DWORD)
+    //  Total: 63 DWORD  (limit: 64)
     // ==========================================
     CD3DX12_DESCRIPTOR_RANGE1 fwdSrvRange;
     fwdSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
-    CD3DX12_ROOT_PARAMETER1 fwdParams[2];
+
+    CD3DX12_ROOT_PARAMETER1 fwdParams[3];
     fwdParams[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);
     fwdParams[1].InitAsDescriptorTable(1, &fwdSrvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    fwdParams[2].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+        D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC fwdRsDesc;
-    fwdRsDesc.Init_1_1(2, fwdParams, 1, &sampler,
+    fwdRsDesc.Init_1_1(3, fwdParams, 1, &sampler,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-    D3DX12SerializeVersionedRootSignature(&fwdRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob);
-    device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_forwardRootSig));
+    CHECK(D3DX12SerializeVersionedRootSignature(&fwdRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob));
+    CHECK(device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_forwardRootSig)));
 
     ComPtr<ID3DBlob> fwdVS, fwdPS;
-    D3DReadFileToBlob(GetShaderPath(L"ForwardTransparent_VS.cso").c_str(), &fwdVS);
-    D3DReadFileToBlob(GetShaderPath(L"ForwardTransparent_PS.cso").c_str(), &fwdPS);
+    CHECK(D3DReadFileToBlob(GetShaderPath(L"ForwardTransparent_VS.cso").c_str(), &fwdVS));
+    CHECK(D3DReadFileToBlob(GetShaderPath(L"ForwardTransparent_PS.cso").c_str(), &fwdPS));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC transPsoDesc = geomPsoDesc;
     transPsoDesc.pRootSignature    = m_forwardRootSig.Get();
@@ -657,5 +660,5 @@ void Renderer::CreateRootSignaturesAndPSOs() {
     transPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     transPsoDesc.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
 
-    device->CreateGraphicsPipelineState(&transPsoDesc, IID_PPV_ARGS(&m_transparentPSO));
+    CHECK(device->CreateGraphicsPipelineState(&transPsoDesc, IID_PPV_ARGS(&m_transparentPSO)));
 }
