@@ -16,6 +16,18 @@ std::wstring GetShaderPath(const std::wstring& filename) {
 }
 
 // ---------------------------------------------------------------------------
+// LightPassConstants (b0) — matches DeferredLight.hlsl cbuffer LightPassConstants
+// ---------------------------------------------------------------------------
+struct LightPassConstants
+{
+    DirectX::XMFLOAT3 cameraPos;
+    float _pad0;
+    DirectX::XMFLOAT3 mainLightDir;
+    float _pad1;
+};
+static_assert(sizeof(LightPassConstants) == 32, "LightPassConstants must be 32 bytes (8 DWORD)");
+
+// ---------------------------------------------------------------------------
 // Init / Shutdown / Resize
 // ---------------------------------------------------------------------------
 bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
@@ -23,8 +35,8 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         if (!m_ctx.Init(panelUnknown, width, height)) return false;
 
         CreateRootSignaturesAndPSOs();
+        CreateLightBuffer();
         m_srvDescriptorSize = m_ctx.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        // Pass the shared depth buffer so GBuffer can create a depth SRV (slot 2)
         m_gBuffer.Init(m_ctx.GetDevice(), width, height, m_ctx.GetDepthBuffer());
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
         return true;
@@ -34,29 +46,22 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
 
 void Renderer::Shutdown() {
     m_isShuttingDown = true;
-
     std::lock_guard<std::mutex> lock(m_renderMutex);
     m_ctx.WaitForGpu();
+    if (m_lightBuffer && m_lightBufferMapped)
+        m_lightBuffer->Unmap(0, nullptr);
+    m_lightBufferMapped = nullptr;
     m_gBuffer.Shutdown();
     m_ctx.Shutdown();
 }
 
 void Renderer::Resize(int width, int height, float scale) {
     if (m_isShuttingDown) return;
-
     std::lock_guard<std::mutex> lock(m_renderMutex);
-    if (m_isShuttingDown) {
-        m_renderMutex.unlock();
-        return;
-    }
-
+    if (m_isShuttingDown) { m_renderMutex.unlock(); return; }
     m_ctx.Resize(width, height, scale);
-
-    if (m_ctx.GetDevice() != nullptr && width > 0 && height > 0) {
-        // Must be called AFTER m_ctx.Resize because the depth buffer is recreated inside.
-        m_gBuffer.Resize(m_ctx.GetDevice(), m_ctx.GetWidth(), m_ctx.GetHeight(),
-                         m_ctx.GetDepthBuffer());
-    }
+    if (m_ctx.GetDevice() != nullptr && width > 0 && height > 0)
+        m_gBuffer.Resize(m_ctx.GetDevice(), m_ctx.GetWidth(), m_ctx.GetHeight(), m_ctx.GetDepthBuffer());
 }
 
 void Renderer::GetStats(int& vertices, int& polygons, int& drawCalls, float& frameTimeMs) {
@@ -64,6 +69,32 @@ void Renderer::GetStats(int& vertices, int& polygons, int& drawCalls, float& fra
     polygons    = m_statPolygons.load(std::memory_order_relaxed);
     drawCalls   = m_statDrawCalls.load(std::memory_order_relaxed);
     frameTimeMs = m_statFrameTime.load(std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// CreateLightBuffer — upload heap, persistently mapped
+// ---------------------------------------------------------------------------
+void Renderer::CreateLightBuffer() {
+    UINT64 size = (sizeof(LightBufferCPU) + 255) & ~255ULL; // 256-byte align
+    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto bufDesc   = CD3DX12_RESOURCE_DESC::Buffer(size);
+    CHECK(m_ctx.GetDevice()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_lightBuffer)));
+    m_lightBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_lightBufferMapped));
+
+    // Default: one directional light pointing down-forward
+    memset(m_lightBufferMapped, 0, sizeof(LightBufferCPU));
+    m_lightBufferMapped->numLights      = 1;
+    m_lightBufferMapped->lights[0].type      = 0;   // Directional
+    m_lightBufferMapped->lights[0].intensity  = 1.0f;
+    m_lightBufferMapped->lights[0].color[0]   = 1.0f;
+    m_lightBufferMapped->lights[0].color[1]   = 1.0f;
+    m_lightBufferMapped->lights[0].color[2]   = 1.0f;
+    m_lightBufferMapped->lights[0].direction[0] =  0.3f;
+    m_lightBufferMapped->lights[0].direction[1] = -1.0f;
+    m_lightBufferMapped->lights[0].direction[2] =  0.5f;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +122,7 @@ void Renderer::RenderFrame() {
     cmdList->RSSetScissorRects(1, &sc);
 
     // ==========================================
-    // Pass 1: Geometry Pass  (2 RTs now: albedo, normal)
+    // Pass 1: Geometry Pass
     // ==========================================
     D3D12_CPU_DESCRIPTOR_HANDLE gbufferRTVs = m_gBuffer.GetRtvStart();
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_ctx.GetDSV();
@@ -170,8 +201,7 @@ void Renderer::RenderFrame() {
     }
 
     // ==========================================
-    // Transition G-Buffer RTs: RENDER_TARGET -> SRV
-    // (depth stays in DEPTH_WRITE during geometry; transition to SRV here)
+    // Transition: RENDER_TARGET / DEPTH_WRITE -> PIXEL_SHADER_RESOURCE
     // ==========================================
     D3D12_RESOURCE_BARRIER barriersToSRV[] = {
         CD3DX12_RESOURCE_BARRIER::Transition(
@@ -182,7 +212,6 @@ void Renderer::RenderFrame() {
             m_gBuffer.GetNormal(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-        // Depth: DEPTH_WRITE -> PIXEL_SHADER_RESOURCE for reconstruction in lighting pass
         CD3DX12_RESOURCE_BARRIER::Transition(
             m_ctx.GetDepthBuffer(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -195,33 +224,35 @@ void Renderer::RenderFrame() {
     // ==========================================
     D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV = m_ctx.GetCurrentBackBufferRTV();
     cmdList->OMSetRenderTargets(1, &backBufferRTV, FALSE, nullptr);
-
     cmdList->SetGraphicsRootSignature(m_lightRootSig.Get());
     cmdList->SetPipelineState(m_lightPSO.Get());
 
     ID3D12DescriptorHeap* gbufferHeaps[] = { m_gBuffer.GetSrvHeap() };
     cmdList->SetDescriptorHeaps(1, gbufferHeaps);
 
-    // b0: SceneConstants (camera / light dir)
-    SceneConstants lightCb = {};
-    lightCb.cameraPos = m_scene.GetCameraPos();
-    XMStoreFloat3(&lightCb.lightDir, XMVector3Normalize(forward));
-    cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &lightCb, 0);
+    // slot 0: b0 LightPassConstants (8 DWORD)
+    LightPassConstants lightPassCb = {};
+    lightPassCb.cameraPos   = m_scene.GetCameraPos();
+    XMStoreFloat3(&lightPassCb.mainLightDir, XMVector3Normalize(forward));
+    cmdList->SetGraphicsRoot32BitConstants(0, sizeof(LightPassConstants) / 4, &lightPassCb, 0);
 
-    // b2: ReconstructConstants (invViewProj for world-pos reconstruction)
+    // slot 1: t0-t2 GBuffer SRVs (descriptor table)
+    cmdList->SetGraphicsRootDescriptorTable(1, m_gBuffer.GetSrvStart());
+
+    // slot 2: b1 LightBuffer CBV
+    cmdList->SetGraphicsRootConstantBufferView(2, m_lightBuffer->GetGPUVirtualAddress());
+
+    // slot 3: b2 ReconstructConstants (invViewProj, 16 DWORD)
     XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
     DirectX::XMFLOAT4X4 invVP;
     XMStoreFloat4x4(&invVP, XMMatrixTranspose(invViewProj));
-    cmdList->SetGraphicsRoot32BitConstants(2, 16, &invVP, 0);
-
-    // t0-t2: albedo, normal, depth SRV
-    cmdList->SetGraphicsRootDescriptorTable(1, m_gBuffer.GetSrvStart());
+    cmdList->SetGraphicsRoot32BitConstants(3, 16, &invVP, 0);
 
     cmdList->DrawInstanced(3, 1, 0, 0);
     currentDrawCalls++;
 
     // ==========================================
-    // Transition back: SRV -> original states for next frame
+    // Transition back: PIXEL_SHADER_RESOURCE -> original
     // ==========================================
     D3D12_RESOURCE_BARRIER barriersToRTV[] = {
         CD3DX12_RESOURCE_BARRIER::Transition(
@@ -232,7 +263,6 @@ void Renderer::RenderFrame() {
             m_gBuffer.GetNormal(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_RENDER_TARGET),
-        // Depth: PIXEL_SHADER_RESOURCE -> DEPTH_WRITE for Forward Pass
         CD3DX12_RESOURCE_BARRIER::Transition(
             m_ctx.GetDepthBuffer(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -525,40 +555,48 @@ void Renderer::CreateRootSignaturesAndPSOs() {
     geomPsoDesc.DepthStencilState   = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     geomPsoDesc.SampleMask          = UINT_MAX;
     geomPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    // 2 RTs now (WorldPos RT removed)
     geomPsoDesc.NumRenderTargets    = GBuffer::TargetCount;
-    geomPsoDesc.RTVFormats[0]       = DXGI_FORMAT_R8G8B8A8_UNORM;       // Albedo+Roughness
-    geomPsoDesc.RTVFormats[1]       = DXGI_FORMAT_R16G16B16A16_FLOAT;   // Normal+Metallic
+    geomPsoDesc.RTVFormats[0]       = DXGI_FORMAT_R8G8B8A8_UNORM;
+    geomPsoDesc.RTVFormats[1]       = DXGI_FORMAT_R16G16B16A16_FLOAT;
     geomPsoDesc.DSVFormat           = DXGI_FORMAT_D32_FLOAT;
     geomPsoDesc.SampleDesc.Count    = 1;
     device->CreateGraphicsPipelineState(&geomPsoDesc, IID_PPV_ARGS(&m_geomPSO));
 
     // ==========================================
     // 2. Lighting Pass Root Signature & PSO
-    //    Slots: b0=SceneConstants, t0-t2=GBuffer SRVs, b2=ReconstructConstants
+    //
+    //  slot 0: b0  LightPassConstants  (InitAsConstants, 8 DWORD)
+    //  slot 1: t0-t2  GBuffer SRVs     (DescriptorTable, 1 DWORD)
+    //  slot 2: b1  LightBuffer         (InitAsConstantBufferView, 2 DWORD)
+    //  slot 3: b2  ReconstructConstants(InitAsConstants, 16 DWORD)
+    //  Total: 8+1+2+16 = 27 DWORD  (limit: 64)
     // ==========================================
     CD3DX12_DESCRIPTOR_RANGE1 lightSrvRange;
-    lightSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // albedo, normal, depth
+    lightSrvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // t0 albedo, t1 normal, t2 depth
 
-    CD3DX12_ROOT_PARAMETER1 lightParams[3];
-    lightParams[0].InitAsConstants(sizeof(SceneConstants) / 4, 0);          // b0
-    lightParams[1].InitAsDescriptorTable(1, &lightSrvRange,                  // t0-t2
+    CD3DX12_ROOT_PARAMETER1 lightParams[4];
+    lightParams[0].InitAsConstants(sizeof(LightPassConstants) / 4, 0, 0,  // b0: 8 DWORD
         D3D12_SHADER_VISIBILITY_PIXEL);
-    lightParams[2].InitAsConstants(16, 2, 0,                                 // b2: invViewProj (16 floats)
+    lightParams[1].InitAsDescriptorTable(1, &lightSrvRange,               // t0-t2
+        D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[2].InitAsConstantBufferView(1, 0,                         // b1: LightBuffer CBV
+        D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+        D3D12_SHADER_VISIBILITY_PIXEL);
+    lightParams[3].InitAsConstants(16, 2, 0,                              // b2: invViewProj 16 DWORD
         D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC lightSampler(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
     lightSampler.AddressU = lightSampler.AddressV = lightSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC lightRsDesc;
-    lightRsDesc.Init_1_1(3, lightParams, 1, &lightSampler,
+    lightRsDesc.Init_1_1(4, lightParams, 1, &lightSampler,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-    D3DX12SerializeVersionedRootSignature(&lightRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob);
-    device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_lightRootSig));
+    CHECK(D3DX12SerializeVersionedRootSignature(&lightRsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sigBlob, &errBlob));
+    CHECK(device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_lightRootSig)));
 
     ComPtr<ID3DBlob> lightVS, lightPS;
-    D3DReadFileToBlob(GetShaderPath(L"DeferredLight_VS.cso").c_str(), &lightVS);
-    D3DReadFileToBlob(GetShaderPath(L"DeferredLight_PS.cso").c_str(), &lightPS);
+    CHECK(D3DReadFileToBlob(GetShaderPath(L"DeferredLight_VS.cso").c_str(), &lightVS));
+    CHECK(D3DReadFileToBlob(GetShaderPath(L"DeferredLight_PS.cso").c_str(), &lightPS));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC lightPsoDesc = {};
     lightPsoDesc.pRootSignature       = m_lightRootSig.Get();
@@ -574,7 +612,7 @@ void Renderer::CreateRootSignaturesAndPSOs() {
     lightPsoDesc.NumRenderTargets     = 1;
     lightPsoDesc.RTVFormats[0]        = DXGI_FORMAT_R8G8B8A8_UNORM;
     lightPsoDesc.SampleDesc.Count     = 1;
-    device->CreateGraphicsPipelineState(&lightPsoDesc, IID_PPV_ARGS(&m_lightPSO));
+    CHECK(device->CreateGraphicsPipelineState(&lightPsoDesc, IID_PPV_ARGS(&m_lightPSO)));
 
     // ==========================================
     // 3. Forward Transparent Pass
@@ -605,13 +643,13 @@ void Renderer::CreateRootSignaturesAndPSOs() {
     transPsoDesc.RTVFormats[2]     = DXGI_FORMAT_UNKNOWN;
 
     D3D12_RENDER_TARGET_BLEND_DESC blendDesc = {};
-    blendDesc.BlendEnable          = TRUE;
-    blendDesc.SrcBlend             = D3D12_BLEND_SRC_ALPHA;
-    blendDesc.DestBlend            = D3D12_BLEND_INV_SRC_ALPHA;
-    blendDesc.BlendOp              = D3D12_BLEND_OP_ADD;
-    blendDesc.SrcBlendAlpha        = D3D12_BLEND_ONE;
-    blendDesc.DestBlendAlpha       = D3D12_BLEND_ZERO;
-    blendDesc.BlendOpAlpha         = D3D12_BLEND_OP_ADD;
+    blendDesc.BlendEnable           = TRUE;
+    blendDesc.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.BlendOp               = D3D12_BLEND_OP_ADD;
+    blendDesc.SrcBlendAlpha         = D3D12_BLEND_ONE;
+    blendDesc.DestBlendAlpha        = D3D12_BLEND_ZERO;
+    blendDesc.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
     blendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     transPsoDesc.BlendState.RenderTarget[0] = blendDesc;
 

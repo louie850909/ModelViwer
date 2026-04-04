@@ -7,6 +7,30 @@
 #include <mutex>
 #include "GBuffer.h"
 
+// Must match LightDef.hlsli (16-byte aligned)
+struct LightCPU
+{
+    int   type;       // 0=Dir 1=Point 2=Spot
+    float intensity;
+    float coneAngle;  // radians
+    float _pad;
+    float color[3];
+    float _pad2;
+    float position[3];
+    float _pad3;
+    float direction[3];
+    float _pad4;
+};
+static_assert(sizeof(LightCPU) == 64, "LightCPU size mismatch");
+
+struct LightBufferCPU
+{
+    int   numLights;
+    float _pad[3];
+    LightCPU lights[16];
+};
+static_assert(sizeof(LightBufferCPU) == 16 + 64 * 16, "LightBufferCPU size mismatch");
+
 class Renderer {
 public:
     std::mutex m_renderMutex;
@@ -28,35 +52,37 @@ public:
     void SetCameraTransform(float px, float py, float pz, float pitch, float yaw) { m_scene.SetCameraTransform(px, py, pz, pitch, yaw); }
     void GetStats(int& vertices, int& polygons, int& drawCalls, float& frameTimeMs);
 
-    // Node API 委派給 Scene
-    int GetTotalNodeCount() { return m_scene.GetTotalNodeCount(); }
+    int  GetTotalNodeCount() { return m_scene.GetTotalNodeCount(); }
     bool GetNodeInfo(int globalIndex, std::string& outName, int& outParentGlobal) { return m_scene.GetNodeInfo(globalIndex, outName, outParentGlobal); }
     bool GetNodeTransform(int globalIndex, float* outT, float* outR, float* outS) { return m_scene.GetNodeTransform(globalIndex, outT, outR, outS); }
     bool SetNodeTransform(int globalIndex, const float* inT, const float* inR, const float* inS) { return m_scene.SetNodeTransform(globalIndex, inT, inR, inS); }
     std::shared_ptr<Mesh> GetMesh() const { return m_scene.GetMesh(); }
 
 private:
-    void CreateRootSignaturesAndPSOs(); // 改名為複數
+    void CreateRootSignaturesAndPSOs();
+    void CreateLightBuffer();  // allocates m_lightBuffer upload heap
 
     GraphicsContext m_ctx;
-    Scene m_scene;
-    GBuffer m_gBuffer;
+    Scene           m_scene;
+    GBuffer         m_gBuffer;
 
-    // Geometry Pass 資源
+    // Geometry Pass
     ComPtr<ID3D12RootSignature> m_geomRootSig;
     ComPtr<ID3D12PipelineState> m_geomPSO;
 
-    // Lighting Pass 資源
+    // Lighting Pass
     ComPtr<ID3D12RootSignature> m_lightRootSig;
     ComPtr<ID3D12PipelineState> m_lightPSO;
+    ComPtr<ID3D12Resource>      m_lightBuffer;        // upload heap, persistently mapped
+    LightBufferCPU*             m_lightBufferMapped = nullptr;
 
-    // Forward Transparent Pass 資源 ---
+    // Forward Transparent Pass
     ComPtr<ID3D12RootSignature> m_forwardRootSig;
     ComPtr<ID3D12PipelineState> m_transparentPSO;
 
     UINT m_srvDescriptorSize = 0;
 
-    std::atomic<bool> m_isShuttingDown{ false };
+    std::atomic<bool>  m_isShuttingDown{ false };
     std::atomic<int>   m_statVertices{ 0 };
     std::atomic<int>   m_statPolygons{ 0 };
     std::atomic<int>   m_statDrawCalls{ 0 };
