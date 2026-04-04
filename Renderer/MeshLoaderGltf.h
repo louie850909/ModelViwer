@@ -3,9 +3,7 @@
 #include <string>
 #include <memory>
 
-// Dispatch-only loader.
-// Format routing: .gltf/.glb → MeshLoaderGltf, everything else → MeshLoaderAssimp
-class MeshLoader {
+class MeshLoaderGltf {
 public:
     static std::shared_ptr<Mesh> Load(const std::string& path);
 };
