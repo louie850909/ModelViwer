@@ -9,6 +9,9 @@ public:
     void Resize(int width, int height, float scale);
     void WaitForGpu();
 
+    ID3D12Device5* GetDevice5() const { return m_device5.Get(); }
+    bool IsDxrSupported() const { return m_isDxrSupported; }
+
     // 取得底層資源
     ID3D12Device* GetDevice() const { return m_device.Get(); }
     ID3D12GraphicsCommandList* GetCommandList() const { return m_cmdList.Get(); }
@@ -42,6 +45,8 @@ private:
 
     static constexpr UINT FRAME_COUNT = 3;
     ComPtr<ID3D12Device>              m_device;
+    ComPtr<ID3D12Device5>             m_device5;
+    bool                              m_isDxrSupported = false;
     ComPtr<ID3D12CommandQueue>        m_cmdQueue;
     ComPtr<IDXGISwapChain4>           m_swapChain;
     ComPtr<ID3D12DescriptorHeap>      m_rtvHeap;

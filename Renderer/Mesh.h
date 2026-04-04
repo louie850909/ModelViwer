@@ -43,4 +43,8 @@ struct Mesh {
     ComPtr<ID3D12Resource> indexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vbView = {};
     D3D12_INDEX_BUFFER_VIEW  ibView = {};
+
+    // --- DXR BLAS 資源 ---
+    ComPtr<ID3D12Resource> blasBuffer;
+    ComPtr<ID3D12Resource> blasScratch;
 };

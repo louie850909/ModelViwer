@@ -102,6 +102,15 @@ void GraphicsContext::CreateDeviceAndQueue() {
     ComPtr<IDXGIFactory7> factory;
     CHECK(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
     CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device)));
+
+    // --- 查詢 ID3D12Device5 與 DXR 支援度 ---
+    if (SUCCEEDED(m_device.As(&m_device5))) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+        if (SUCCEEDED(m_device5->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)))) {
+            m_isDxrSupported = (options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
+        }
+    }
+
     D3D12_COMMAND_QUEUE_DESC qDesc = {};
     qDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     CHECK(m_device->CreateCommandQueue(&qDesc, IID_PPV_ARGS(&m_cmdQueue)));
