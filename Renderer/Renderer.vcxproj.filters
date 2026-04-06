@@ -66,6 +66,9 @@
     <ClInclude Include="ForwardTransparentPass.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="RayTracingPass.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -98,6 +101,9 @@
     <ClCompile Include="ForwardTransparentPass.cpp">
       <Filter>ソース ファイル\RenderPass</Filter>
     </ClCompile>
+    <ClCompile Include="RayTracingPass.cpp">
+      <Filter>ソース ファイル\RenderPass</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -119,6 +125,9 @@
       <Filter>Shaders</Filter>
     </CustomBuild>
     <CustomBuild Include="shaders\ForwardTransparent.hlsl">
+      <Filter>Shaders</Filter>
+    </CustomBuild>
+    <CustomBuild Include="shaders\Raytracing.hlsl">
       <Filter>Shaders</Filter>
     </CustomBuild>
   </ItemGroup>

@@ -3,6 +3,7 @@
 #include "GeometryPass.h"
 #include "DeferredLightPass.h"
 #include "ForwardTransparentPass.h"
+#include "RayTracingPass.h"
 #include <stdexcept>
 #include <filesystem>
 #include <string>
@@ -33,10 +34,14 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         m_geomPass = std::make_unique<GeometryPass>();
         m_lightPass = std::make_unique<DeferredLightPass>();
         m_transparentPass = std::make_unique<ForwardTransparentPass>();
+		if (m_ctx.IsDxrSupported())
+            m_rayTracingPass = std::make_unique<RayTracingPass>();
 
         m_geomPass->Init(m_ctx.GetDevice());
         m_lightPass->Init(m_ctx.GetDevice());
         m_transparentPass->Init(m_ctx.GetDevice());
+		if (m_rayTracingPass)
+            m_rayTracingPass->Init(m_ctx.GetDevice());
 
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
         return true;
@@ -132,10 +137,16 @@ void Renderer::RenderFrame() {
     passCtx.view = XMMatrixLookAtLH(eye, eye + passCtx.forward, XMVectorSet(0, 1, 0, 0));
     passCtx.proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
 
-    // 依序派發至各個 Pipeline Pass
-    m_geomPass->Execute(cmdList, passCtx);
-    m_lightPass->Execute(cmdList, passCtx);
-    m_transparentPass->Execute(cmdList, passCtx);
+    if (m_rayTracingEnabled && m_ctx.IsDxrSupported()) {
+        // 進入光線追蹤管線
+        m_rayTracingPass->Execute(cmdList, passCtx);
+    }
+    else {
+        // 進入傳統光柵化管線
+        m_geomPass->Execute(cmdList, passCtx);
+        m_lightPass->Execute(cmdList, passCtx);
+        m_transparentPass->Execute(cmdList, passCtx);
+    }
 
     m_statVertices.store(passCtx.totalVerts, std::memory_order_relaxed);
     m_statPolygons.store(passCtx.totalPolys, std::memory_order_relaxed);
@@ -245,50 +256,59 @@ void Renderer::UploadMeshToGpu(std::shared_ptr<Mesh> mesh, int meshId) {
     // ========================================================
     // 如果支援 DXR，則順便建置此 Mesh 的 BLAS
     // ========================================================
+    std::vector<ComPtr<ID3D12Resource>> scratchBuffers; // 暫存，等待 GPU 執行完畢後自然釋放
+
     if (m_ctx.IsDxrSupported()) {
         auto device5 = m_ctx.GetDevice5();
+        mesh->blasBuffers.resize(mesh->subMeshes.size());
+        scratchBuffers.resize(mesh->subMeshes.size());
 
-        D3D12_RAYTRACING_GEOMETRY_DESC geomDesc = {};
-        geomDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-        geomDesc.Triangles.IndexBuffer = mesh->indexBuffer->GetGPUVirtualAddress();
-        geomDesc.Triangles.IndexCount = (UINT)mesh->indices.size();
-        geomDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-        geomDesc.Triangles.Transform3x4 = 0;
-        geomDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-        geomDesc.Triangles.VertexCount = (UINT)mesh->vertices.size();
-        geomDesc.Triangles.VertexBuffer.StartAddress = mesh->vertexBuffer->GetGPUVirtualAddress();
-        geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
-        geomDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        for (size_t i = 0; i < mesh->subMeshes.size(); ++i) {
+            const auto& sub = mesh->subMeshes[i];
 
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
-        inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-        inputs.NumDescs = 1;
-        inputs.pGeometryDescs = &geomDesc;
-        inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            D3D12_RAYTRACING_GEOMETRY_DESC geomDesc = {};
+            geomDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
 
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
-        device5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+            // ★ 核心修正 1：加上指標偏移！只為這個 SubMesh 的範圍建置加速結構
+            geomDesc.Triangles.IndexBuffer = mesh->indexBuffer->GetGPUVirtualAddress() + sub.indexOffset * sizeof(uint32_t);
+            geomDesc.Triangles.IndexCount = sub.indexCount;
+            geomDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+            geomDesc.Triangles.Transform3x4 = 0;
+            geomDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            geomDesc.Triangles.VertexCount = (UINT)mesh->vertices.size();
+            geomDesc.Triangles.VertexBuffer.StartAddress = mesh->vertexBuffer->GetGPUVirtualAddress();
+            geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
+            geomDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
-        auto defaultHeapForBlas = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-        auto scratchDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        auto blasDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+            inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            inputs.NumDescs = 1;
+            inputs.pGeometryDescs = &geomDesc;
+            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
 
-        device5->CreateCommittedResource(&defaultHeapForBlas, D3D12_HEAP_FLAG_NONE, &scratchDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&mesh->blasScratch));
-        device5->CreateCommittedResource(&defaultHeapForBlas, D3D12_HEAP_FLAG_NONE, &blasDesc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nullptr, IID_PPV_ARGS(&mesh->blasBuffer));
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+            device5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
 
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
-        buildDesc.Inputs = inputs;
-        buildDesc.DestAccelerationStructureData = mesh->blasBuffer->GetGPUVirtualAddress();
-        buildDesc.ScratchAccelerationStructureData = mesh->blasScratch->GetGPUVirtualAddress();
+            auto defaultHeapForBlas = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            auto scratchDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            auto blasDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-        ComPtr<ID3D12GraphicsCommandList4> cmdList4;
-        if (SUCCEEDED(cmdList->QueryInterface(IID_PPV_ARGS(&cmdList4)))) {
-            cmdList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+            device5->CreateCommittedResource(&defaultHeapForBlas, D3D12_HEAP_FLAG_NONE, &scratchDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&scratchBuffers[i]));
+            device5->CreateCommittedResource(&defaultHeapForBlas, D3D12_HEAP_FLAG_NONE, &blasDesc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nullptr, IID_PPV_ARGS(&mesh->blasBuffers[i]));
 
-            // 確保 BLAS 建置完成才能在後續管線使用
-            auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(mesh->blasBuffer.Get());
-            cmdList->ResourceBarrier(1, &uavBarrier);
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+            buildDesc.Inputs = inputs;
+            buildDesc.DestAccelerationStructureData = mesh->blasBuffers[i]->GetGPUVirtualAddress();
+            buildDesc.ScratchAccelerationStructureData = scratchBuffers[i]->GetGPUVirtualAddress();
+
+            ComPtr<ID3D12GraphicsCommandList4> cmdList4;
+            if (SUCCEEDED(cmdList->QueryInterface(IID_PPV_ARGS(&cmdList4)))) {
+                cmdList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+                // 等待這個 SubMesh 的 BLAS 建置完成
+                auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(mesh->blasBuffers[i].Get());
+                cmdList->ResourceBarrier(1, &uavBarrier);
+            }
         }
     }
 
