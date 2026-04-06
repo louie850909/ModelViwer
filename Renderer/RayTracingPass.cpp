@@ -5,13 +5,14 @@ void RayTracingPass::CreateRootSignature(ID3D12Device5* device) {
     CD3DX12_DESCRIPTOR_RANGE1 uavRange;
     uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 
-    CD3DX12_ROOT_PARAMETER1 rootParams[3];
+    CD3DX12_ROOT_PARAMETER1 rootParams[4];
     rootParams[0].InitAsDescriptorTable(1, &uavRange);                 // u0: 輸出貼圖
     rootParams[1].InitAsShaderResourceView(0);                         // t0: TLAS
     rootParams[2].InitAsConstantBufferView(0);                         // b0: Camera CB
+    rootParams[3].InitAsConstantBufferView(1);                         // b1: Light CB
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC globalRootSigDesc;
-    globalRootSigDesc.Init_1_1(3, rootParams);
+    globalRootSigDesc.Init_1_1(4, rootParams);
 
     ComPtr<ID3DBlob> blob, error;
     D3DX12SerializeVersionedRootSignature(&globalRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &blob, &error);
@@ -63,7 +64,7 @@ void RayTracingPass::CreatePipelineState(ID3D12Device5* device) {
 
     // 5. Pipeline Config (最大遞迴深度)
     D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig = {};
-    pipelineConfig.MaxTraceRecursionDepth = 1;
+    pipelineConfig.MaxTraceRecursionDepth = 2;
     subobjects[index++] = { D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig };
 
     // Local Root Signature
@@ -94,7 +95,9 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
 
     // 每個 HitGroup Record 大小: 32(ID) + 8(Index Buffer VA) + 8(Vertex Buffer VA) + 16(對齊) = 64 bytes
     UINT hitGroupStride = 64;
-    UINT sbtSize = 64 + 64 + (m_instanceCount * hitGroupStride);
+
+    // ★ 讓 Miss Table 大小加倍，容納兩個 Miss Shader (64 + 128)
+    UINT sbtSize = 64 + 128 + (m_instanceCount * hitGroupStride);
     sbtSize = (sbtSize + 255) & ~255; // 256 byte 對齊
 
     if (!m_sbtBuffer || m_sbtBuffer->GetDesc().Width < sbtSize) {
@@ -111,8 +114,10 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
 
     memcpy(pData, stateObjectProps->GetShaderIdentifier(L"RayGen"), 32);
     memcpy(pData + 64, stateObjectProps->GetShaderIdentifier(L"Miss"), 32);
+    memcpy(pData + 128, stateObjectProps->GetShaderIdentifier(L"ShadowMiss"), 32);
 
-    uint8_t* hitGroupData = pData + 128;
+    // HitGroup 起始偏移量往後推
+    uint8_t* hitGroupData = pData + 192;
     for (auto& inst : ctx.scene->GetMeshes()) {
         auto& mesh = inst.mesh;
         if (!mesh || mesh->blasBuffers.empty()) continue;
@@ -137,7 +142,7 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
     }
 
     m_sbtBuffer->Unmap(0, nullptr);
-    m_sbtHitGroupOffset = 128;
+    m_sbtHitGroupOffset = 192;// HitGroup 偏移量紀錄
     m_sbtHitGroupStride = hitGroupStride;
 }
 
@@ -303,6 +308,7 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     cmdList4->SetComputeRootDescriptorTable(0, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart()); // UAV
     cmdList4->SetComputeRootShaderResourceView(1, m_tlasBuffer->GetGPUVirtualAddress());              // TLAS
     cmdList4->SetComputeRootConstantBufferView(2, m_cameraCB->GetGPUVirtualAddress());                // Camera
+	cmdList4->SetComputeRootConstantBufferView(3, ctx.lightCB->GetGPUVirtualAddress());  		        // Light
 
     // 設定 SBT 區塊位置與大小
     D3D12_DISPATCH_RAYS_DESC rayDesc = {};
@@ -310,7 +316,7 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     rayDesc.RayGenerationShaderRecord.SizeInBytes = 64;
 
     rayDesc.MissShaderTable.StartAddress = m_sbtBuffer->GetGPUVirtualAddress() + 64;
-    rayDesc.MissShaderTable.SizeInBytes = 64;
+    rayDesc.MissShaderTable.SizeInBytes = 128; // 包含兩個 Miss Shader
     rayDesc.MissShaderTable.StrideInBytes = 64;
 
     // 套用動態的 HitGroup 設定

@@ -8,6 +8,27 @@ cbuffer CameraParams : register(b0, space0)
     float pad;
 };
 
+struct Light
+{
+    int type;
+    float intensity;
+    float coneAngle;
+    float _pad1;
+    float3 color;
+    float _pad2;
+    float3 position;
+    float _pad3;
+    float3 direction;
+    float _pad4;
+};
+
+cbuffer LightBuffer : register(b1, space0)
+{
+    int numLights;
+    float3 _padLights;
+    Light lights[16];
+};
+
 struct Vertex
 {
     float3 position;
@@ -23,6 +44,19 @@ struct Payload
 {
     float4 color;
 };
+
+// 陰影射線專用的 Payload
+struct ShadowPayload
+{
+    bool isHit;
+};
+
+[shader("miss")]
+void ShadowMiss(inout ShadowPayload payload)
+{
+    // 沒打中任何東西，代表沒有遮蔽物 (不在陰影中)
+    payload.isHit = false;
+}
 
 [shader("raygeneration")]
 void RayGen()
@@ -82,13 +116,60 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     // 將法線轉至世界空間 (利用 WorldToObject 矩陣的轉置來正確處理非等比縮放)
     float3x4 mInv = WorldToObject3x4();
     float3 worldNormal = normalize(mul(localNormal, (float3x3) mInv));
-
-    // 簡易的 Diffuse 光照模型
-    float3 lightDir = normalize(float3(1.0f, 1.0f, -1.0f));
-    float ndotl = max(0.0f, dot(worldNormal, lightDir));
     
-    float3 diffuse = float3(0.9f, 0.9f, 0.9f) * ndotl;
-    float3 ambient = float3(0.15f, 0.15f, 0.2f);
+    // 計算交點的世界座標
+    float3 worldPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
 
-    payload.color = float4(diffuse + ambient, 1.0f);
+    float3 finalColor = float3(0, 0, 0);
+    float3 baseColor = float3(0.9f, 0.9f, 0.9f); // 暫時代替紋理的純白材質
+
+    // 尋訪所有光源
+    for (int i = 0; i < numLights; i++)
+    {
+        Light L = lights[i];
+        float3 lightDir;
+        float attenuation = 1.0f;
+        float shadowTMax = 10000.0f;
+
+        if (L.type == 0)
+        { // Directional Light
+            lightDir = normalize(-L.direction);
+        }
+        else
+        { // Point Light
+            float3 d = L.position - worldPos;
+            float dist = length(d);
+            lightDir = d / dist;
+            attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
+            shadowTMax = dist; // 陰影射線只需測量到光源的距離
+        }
+
+        float ndotl = max(0.0f, dot(worldNormal, lightDir));
+
+        if (ndotl > 0.0f)
+        {
+            // ★ 發射陰影射線
+            RayDesc shadowRay;
+            shadowRay.Origin = worldPos;
+            shadowRay.Direction = lightDir;
+            shadowRay.TMin = 0.01f; // 加上極小偏移值，避免自體陰影 (Shadow Acne)
+            shadowRay.TMax = shadowTMax;
+
+            ShadowPayload shadowPayload;
+            shadowPayload.isHit = true; // 預設當作被遮蔽
+
+            // 發送射線：遇到任意物體即停止，且跳過 ClosestHit 以增進效能。MissShader 索引為 1 (ShadowMiss)
+            TraceRay(Scene,
+                     RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                     0xFF, 0, 1, 1, shadowRay, shadowPayload);
+
+            if (!shadowPayload.isHit)
+            {
+                finalColor += baseColor * L.color * L.intensity * ndotl * attenuation;
+            }
+        }
+    }
+
+    float3 ambient = float3(0.1f, 0.1f, 0.15f) * baseColor;
+    payload.color = float4(finalColor + ambient, 1.0f);
 }
