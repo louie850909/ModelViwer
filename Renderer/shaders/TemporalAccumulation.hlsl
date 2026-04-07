@@ -46,16 +46,16 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
         float4 mu = m1 / 9.0f;
         float4 sigma = sqrt(max(m2 / 9.0f - mu * mu, 0.0f));
         
-        // 容許範圍設為均值 +/- 1.5倍標準差
-        float4 colorMin = mu - 1.5f * sigma;
-        float4 colorMax = mu + 1.5f * sigma;
+        // 1.0f 在 motion 時更積極截斷鬼影，靜止時仍能充分累積
+        float4 colorMin = mu - 1.0f * sigma;
+        float4 colorMax = mu + 1.0f * sigma;
 
         historyColor = clamp(historyColor, colorMin, colorMax);
     }
 
     // 動態權重：如果像素移動速度越快，我們就越不信任歷史畫面 (提高新畫面的權重)，藉此消除殘影
     float velMag = length(velocity);
-    float blendWeight = lerp(0.05f, 0.8f, saturate(velMag * 100.0f));
+    float blendWeight = lerp(0.10f, 0.80f, saturate(velMag * 100.0f));
     float4 finalColor = lerp(historyColor, currentColor, blendWeight);
 
     OutputGI[DTid.xy] = finalColor;

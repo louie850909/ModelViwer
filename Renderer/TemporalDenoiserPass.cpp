@@ -46,10 +46,31 @@ void TemporalDenoiserPass::EnsureResources(ID3D12Device* device, int width, int 
     auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
+    // 建立一個暫用的 non-shader-visible heap 來做 Clear
+    D3D12_DESCRIPTOR_HEAP_DESC clearHeapDesc = {};
+    clearHeapDesc.NumDescriptors = 2;
+    clearHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    clearHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // CPU-side only
+    ComPtr<ID3D12DescriptorHeap> clearHeap;
+    device->CreateDescriptorHeap(&clearHeapDesc, IID_PPV_ARGS(&clearHeap));
+    UINT descSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
     for (int i = 0; i < 2; ++i) {
         m_history[i].Reset();
         device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_history[i]));
+
+        // 建立 CPU-side UAV descriptor，用於 ClearUnorderedAccessViewFloat
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            clearHeap->GetCPUDescriptorHandleForHeapStart(), i, descSize);
+        device->CreateUnorderedAccessView(m_history[i].Get(), nullptr, &uavDesc, cpuHandle);
     }
+
+    m_clearHeapForInit = clearHeap; // 暫存，供 Execute 第一幀使用
+    m_needsClear = true;
 }
 
 void TemporalDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext& ctx) {
@@ -57,6 +78,35 @@ void TemporalDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPas
     EnsureResources(device, ctx.gfx->GetWidth(), ctx.gfx->GetHeight());
 
     if (!ctx.rawRaytracingOutput) return;
+
+    if (m_needsClear) {
+        m_needsClear = false;
+
+        // 需要 shader-visible heap 的 GPU handle + non-visible heap 的 CPU handle 同時傳入
+        // 用 m_descriptorHeap (shader-visible) 來建立 GPU handle
+        UINT srvUavSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        ID3D12DescriptorHeap* heaps[] = { m_descriptorHeap.Get() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
+        const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+
+        for (int i = 0; i < 2; ++i) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+            // 使用 descriptor heap 的前兩個 slot 暫放 clear 用的 UAV
+            auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+                m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), i, srvUavSize);
+            auto gpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+                m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), i, srvUavSize);
+
+            device->CreateUnorderedAccessView(m_history[i].Get(), nullptr, &uavDesc, cpuHandle);
+            cmdList->ClearUnorderedAccessViewFloat(gpuHandle, cpuHandle,
+                m_history[i].Get(), clearColor, 0, nullptr);
+        }
+    }
 
     // Ping-Pong 邏輯
     int readIdx = (ctx.frameCount) % 2;

@@ -127,23 +127,35 @@ void RayGen()
 
     float4 target = mul(float4(d.x, d.y, 1.0f, 1.0f), viewProjInv);
     float3 rayDir = normalize((target.xyz / target.w) - cameraPos);
+    
+    // 為了減少靜態雜訊，對每個像素發射多條光線並取平均
+    const uint SPP = 2;
+    float3 accumulatedRadiance = float3(0, 0, 0);
 
-    RayDesc ray;
-    ray.Origin = cameraPos;
-    ray.Direction = rayDir;
-    ray.TMin = 0.001f;
-    ray.TMax = 10000.0f;
+    [unroll]
+    for (uint s = 0; s < SPP; ++s)
+    {
+        Payload payload;
+        payload.radiance = float3(0, 0, 0);
+        payload.throughput = float3(1, 1, 1);
+        payload.depth = 0;
+        // 每個 sample 用不同的 seed，確保方向各異
+        payload.seed = pcg_hash(launchIndex.y * launchDim.x + launchIndex.x
+                                + frameCount * 719393u
+                                + s * 1234567u); // ← sample offset
 
-    Payload payload;
-    payload.radiance = float3(0, 0, 0);
-    payload.throughput = float3(1, 1, 1);
-    payload.depth = 0;
-    // 使用像素座標與影格數作為亂數種子，避免靜態雜訊
-    payload.seed = pcg_hash(launchIndex.y * launchDim.x + launchIndex.x + frameCount * 719393u);
+        RayDesc ray;
+        ray.Origin = cameraPos;
+        ray.Direction = rayDir;
+        ray.TMin = 0.001f;
+        ray.TMax = 10000.0f;
 
-    TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
+        TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
+        accumulatedRadiance += payload.radiance;
+    }
 
-    RenderTarget[launchIndex] = float4(payload.radiance, 1.0f);
+    // 取平均
+    RenderTarget[launchIndex] = float4(accumulatedRadiance / (float) SPP, 1.0f);
 }
 
 [shader("closesthit")]

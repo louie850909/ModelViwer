@@ -17,6 +17,8 @@ private:
     // 兩張 Ping-Pong Buffer 互換讀寫
     ComPtr<ID3D12Resource> m_history[2];
     ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
+    ComPtr<ID3D12DescriptorHeap> m_clearHeapForInit;
+    bool m_needsClear = true;
 
     int m_width = 0;
     int m_height = 0;
