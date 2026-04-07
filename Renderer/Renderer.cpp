@@ -38,6 +38,7 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         {
             m_rayTracingPass = std::make_unique<RayTracingPass>();
             m_temporalDenoiserPass = std::make_unique<TemporalDenoiserPass>();
+            m_spatialDenoiserPass = std::make_unique<SpatialDenoiserPass>();
         }
 
         m_geomPass->Init(m_ctx.GetDevice());
@@ -45,6 +46,11 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         m_transparentPass->Init(m_ctx.GetDevice());
 		if (m_rayTracingPass) m_rayTracingPass->Init(m_ctx.GetDevice());
         if (m_temporalDenoiserPass) m_temporalDenoiserPass->Init(m_ctx.GetDevice());
+        if (m_spatialDenoiserPass)
+        {
+            m_spatialDenoiserPass->SetTemporalPass(m_temporalDenoiserPass.get()); // 綁定關聯
+            m_spatialDenoiserPass->Init(m_ctx.GetDevice());
+        }
 
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
         return true;
@@ -154,6 +160,7 @@ void Renderer::RenderFrame() {
         // 進入光線追蹤管線
         m_rayTracingPass->Execute(cmdList, passCtx);
         m_temporalDenoiserPass->Execute(cmdList, passCtx);
+        m_spatialDenoiserPass->Execute(cmdList, passCtx);
     }
     else {
         // 進入傳統光柵化管線

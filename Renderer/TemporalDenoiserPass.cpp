@@ -122,20 +122,4 @@ void TemporalDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPas
         CD3DX12_RESOURCE_BARRIER::Transition(historyRead, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
     cmdList->ResourceBarrier(2, postCompute);
-
-    // 暫時依然複製結果到 BackBuffer (到階段四時我們會改掉這段)
-    auto backBuffer = ctx.gfx->GetCurrentBackBuffer();
-    D3D12_RESOURCE_BARRIER copyBarriers[2] = {
-        CD3DX12_RESOURCE_BARRIER::Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST),
-        CD3DX12_RESOURCE_BARRIER::Transition(historyWrite, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE)
-    };
-    cmdList->ResourceBarrier(2, copyBarriers);
-
-    cmdList->CopyResource(backBuffer, historyWrite);
-
-    D3D12_RESOURCE_BARRIER copyBarriersPost[2] = {
-        CD3DX12_RESOURCE_BARRIER::Transition(backBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET),
-        CD3DX12_RESOURCE_BARRIER::Transition(historyWrite, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-    };
-    cmdList->ResourceBarrier(2, copyBarriersPost);
 }

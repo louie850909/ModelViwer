@@ -5,6 +5,7 @@
 #include "GBuffer.h"
 #include "IRenderPass.h"
 #include "TemporalDenoiserPass.h"
+#include "SpatialDenoiserPass.h"
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -70,7 +71,8 @@ private:
     std::unique_ptr<IRenderPass> m_lightPass;
     std::unique_ptr<IRenderPass> m_transparentPass;
     std::unique_ptr<IRenderPass> m_rayTracingPass;
-    std::unique_ptr<IRenderPass> m_temporalDenoiserPass;
+    std::unique_ptr<TemporalDenoiserPass> m_temporalDenoiserPass;
+    std::unique_ptr<SpatialDenoiserPass> m_spatialDenoiserPass;
 
     std::atomic<bool> m_isShuttingDown{ false };
     std::atomic<int>   m_statVertices{ 0 };

@@ -53,7 +53,9 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
         historyColor = clamp(historyColor, colorMin, colorMax);
     }
 
-    float blendWeight = 0.1f; // 可以根據需要調整權重，或是根據像素運動速度動態調整
+    // 動態權重：如果像素移動速度越快，我們就越不信任歷史畫面 (提高新畫面的權重)，藉此消除殘影
+    float velMag = length(velocity);
+    float blendWeight = lerp(0.05f, 0.8f, saturate(velMag * 100.0f));
     float4 finalColor = lerp(historyColor, currentColor, blendWeight);
 
     OutputGI[DTid.xy] = finalColor;
