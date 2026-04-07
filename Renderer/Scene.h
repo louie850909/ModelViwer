@@ -6,14 +6,9 @@
 #include <string>
 
 struct SceneConstants {
-    DirectX::XMFLOAT4X4 mvp;
-    DirectX::XMFLOAT4X4 modelMatrix;
-    DirectX::XMFLOAT4X4 normalMatrix;
-    DirectX::XMFLOAT3   cameraPos;
-    float               _pad1;
-    DirectX::XMFLOAT3   lightDir;
-    float               _pad2;
-    DirectX::XMFLOAT4   baseColor;
+    DirectX::XMFLOAT4X4 mvp;         // 16 DWORDs
+    DirectX::XMFLOAT4X4 prevMvp;     // 16 DWORDs
+    DirectX::XMFLOAT4X4 modelMatrix; // 16 DWORDs
 };
 
 struct LightNode {

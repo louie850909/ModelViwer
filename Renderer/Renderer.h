@@ -41,6 +41,8 @@ public:
 
 private:
     UINT m_frameCount = 0;
+    DirectX::XMMATRIX m_prevView = DirectX::XMMatrixIdentity();
+    DirectX::XMMATRIX m_prevProj = DirectX::XMMatrixIdentity();
     void UpdateLightBuffer();
 
     bool m_rayTracingEnabled = false;
@@ -51,7 +53,7 @@ private:
 
     struct LightBufferData {
         int numLights;
-        float _pad[3];
+        DirectX::XMFLOAT3 cameraPos;
         struct Light {
             int type; float intensity; float coneAngle; float _pad1;
             float color[3]; float _pad2;

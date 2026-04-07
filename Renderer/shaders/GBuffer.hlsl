@@ -1,13 +1,8 @@
 cbuffer SceneConstants : register(b0)
 {
     matrix mvp;
+    matrix prevMvp;
     matrix modelMatrix;
-    matrix normalMatrix;
-    float3 cameraPos;
-    float _pad1;
-    float3 lightDir;
-    float _pad2;
-    float4 baseColor;
 };
 
 struct VSInput
@@ -23,6 +18,8 @@ struct VSOutput
     float3 worldPos : POSITION;
     float3 normal : NORMAL;
     float2 uv : TEXCOORD;
+    float4 clipPos : POSITION1;
+    float4 prevClipPos : POSITION2;
 };
 
 VSOutput VSMain(VSInput input)
@@ -30,8 +27,22 @@ VSOutput VSMain(VSInput input)
     VSOutput output;
     output.pos = mul(float4(input.pos, 1.0f), mvp);
     output.worldPos = mul(float4(input.pos, 1.0f), modelMatrix).xyz;
-    output.normal = normalize(mul(input.normal, (float3x3) normalMatrix));
+    
+    // 透過 Adjugate Matrix (伴隨矩陣) 動態推導法線的 Inverse 矩陣
+    float3x3 m3x3 = (float3x3) modelMatrix;
+    float3x3 adj = transpose(float3x3(
+        cross(m3x3[1], m3x3[2]),
+        cross(m3x3[2], m3x3[0]),
+        cross(m3x3[0], m3x3[1])
+    ));
+    output.normal = normalize(mul(input.normal, adj));
+    
     output.uv = input.uv;
+    
+    // 記錄當前幀與上一幀的 Clip Space 位置 (供 Velocity 運算)
+    output.clipPos = output.pos;
+    output.prevClipPos = mul(float4(input.pos, 1.0f), prevMvp);
+    
     return output;
 }
 
@@ -44,6 +55,7 @@ struct PSOutput
     float4 AlbedoRoughness : SV_Target0;
     float4 NormalMetallic : SV_Target1;
     float4 WorldPos : SV_Target2;
+    float2 Velocity : SV_Target3;
 };
 
 PSOutput PSMain(VSOutput input)
@@ -59,6 +71,13 @@ PSOutput PSMain(VSOutput input)
     output.AlbedoRoughness = float4(albedo.rgb, mr.g);
     output.NormalMetallic = float4(normalize(input.normal), mr.b);
     output.WorldPos = float4(input.worldPos, 1.0f);
+    
+    // 計算螢幕空間動態向量 (Velocity)
+    float2 ndc = input.clipPos.xy / input.clipPos.w;
+    float2 prevNdc = input.prevClipPos.xy / input.prevClipPos.w;
+    
+    // NDC [-1, 1] 轉 UV [0, 1] 空間 (注意 Y 軸反轉)
+    output.Velocity = (ndc - prevNdc) * float2(0.5f, -0.5f);
     
     return output;
 }

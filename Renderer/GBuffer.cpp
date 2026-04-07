@@ -52,6 +52,13 @@ void GBuffer::CreateResources(ID3D12Device* device, int width, int height) {
     clearPos.Color[0] = 0.0f; clearPos.Color[1] = 0.0f; clearPos.Color[2] = 0.0f; clearPos.Color[3] = 0.0f;
     auto descPos = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, width, height, 1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     CHECK(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descPos, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearPos, IID_PPV_ARGS(&m_worldPos)));
+
+    // 4. Velocity (R16G16_FLOAT) - 足以存放螢幕 UV 空間的移動向量
+    D3D12_CLEAR_VALUE clearVel = {};
+    clearVel.Format = DXGI_FORMAT_R16G16_FLOAT;
+    clearVel.Color[0] = 0.0f; clearVel.Color[1] = 0.0f; clearVel.Color[2] = 0.0f; clearVel.Color[3] = 0.0f;
+    auto descVel = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16_FLOAT, width, height, 1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    CHECK(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descVel, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearVel, IID_PPV_ARGS(&m_velocity)));
 }
 
 void GBuffer::CreateHeapsAndViews(ID3D12Device* device) {
@@ -80,6 +87,8 @@ void GBuffer::CreateHeapsAndViews(ID3D12Device* device) {
     device->CreateRenderTargetView(m_normal.Get(), nullptr, rtvHandle);
     rtvHandle.Offset(1, m_rtvDescSize);
     device->CreateRenderTargetView(m_worldPos.Get(), nullptr, rtvHandle);
+    rtvHandle.Offset(1, m_rtvDescSize);
+    device->CreateRenderTargetView(m_velocity.Get(), nullptr, rtvHandle);
 
     // 綁定 SRV
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(m_srvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -88,4 +97,6 @@ void GBuffer::CreateHeapsAndViews(ID3D12Device* device) {
     device->CreateShaderResourceView(m_normal.Get(), nullptr, srvHandle);
     srvHandle.Offset(1, m_srvDescSize);
     device->CreateShaderResourceView(m_worldPos.Get(), nullptr, srvHandle);
+    srvHandle.Offset(1, m_srvDescSize);
+    device->CreateShaderResourceView(m_velocity.Get(), nullptr, srvHandle);
 }

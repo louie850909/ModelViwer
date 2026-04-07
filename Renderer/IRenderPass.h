@@ -17,6 +17,8 @@ struct RenderPassContext {
     DirectX::XMMATRIX view;
     DirectX::XMMATRIX proj;
     DirectX::XMVECTOR forward;
+    DirectX::XMMATRIX prevView;
+    DirectX::XMMATRIX prevProj;
 
     int currentDrawCalls = 0;
     int totalVerts = 0;

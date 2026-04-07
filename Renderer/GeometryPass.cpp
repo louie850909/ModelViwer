@@ -39,10 +39,11 @@ void GeometryPass::Init(ID3D12Device* device) {
     geomPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     geomPsoDesc.SampleMask = UINT_MAX;
     geomPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    geomPsoDesc.NumRenderTargets = 3;
+    geomPsoDesc.NumRenderTargets = 4;
     geomPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     geomPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     geomPsoDesc.RTVFormats[2] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    geomPsoDesc.RTVFormats[3] = DXGI_FORMAT_R16G16_FLOAT;
     geomPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     geomPsoDesc.SampleDesc.Count = 1;
     device->CreateGraphicsPipelineState(&geomPsoDesc, IID_PPV_ARGS(&m_pso));
@@ -51,12 +52,12 @@ void GeometryPass::Init(ID3D12Device* device) {
 void GeometryPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext& ctx) {
     D3D12_CPU_DESCRIPTOR_HANDLE gbufferRTVs = ctx.gbuffer->GetRtvStart();
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = ctx.gfx->GetDSV();
-    cmdList->OMSetRenderTargets(3, &gbufferRTVs, TRUE, &dsv);
+    cmdList->OMSetRenderTargets(4, &gbufferRTVs, TRUE, &dsv);
 
     float clearGBuffer[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gbufferRTVs);
     auto device = ctx.gfx->GetDevice();
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         cmdList->ClearRenderTargetView(rtvHandle, clearGBuffer, 0, nullptr);
         rtvHandle.Offset(1, device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
     }
@@ -91,11 +92,13 @@ void GeometryPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext
 
             XMMATRIX modelMat = globalTransforms[n];
             SceneConstants cb = {};
+            // 1. 當前 MVP
             XMStoreFloat4x4(&cb.mvp, XMMatrixTranspose(modelMat * ctx.view * ctx.proj));
+            // 2. 上一幀 MVP
+            XMMATRIX prevMvpMat = modelMat * ctx.prevView * ctx.prevProj;
+            XMStoreFloat4x4(&cb.prevMvp, XMMatrixTranspose(prevMvpMat));
+            // 3. Model Matrix
             XMStoreFloat4x4(&cb.modelMatrix, XMMatrixTranspose(modelMat));
-            XMStoreFloat4x4(&cb.normalMatrix, XMMatrixInverse(nullptr, modelMat));
-            XMStoreFloat3(&cb.lightDir, XMVector3Normalize(ctx.forward));
-            cb.cameraPos = ctx.scene->GetCameraPos();
             cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
 
             for (int subIdx : node.subMeshIndices) {
@@ -113,10 +116,11 @@ void GeometryPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext
         ctx.totalPolys += (int)mesh->indices.size() / 3;
     }
 
-    D3D12_RESOURCE_BARRIER barriersToSRV[3] = {
+    D3D12_RESOURCE_BARRIER barriersToSRV[4] = {
         CD3DX12_RESOURCE_BARRIER::Transition(ctx.gbuffer->GetAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
         CD3DX12_RESOURCE_BARRIER::Transition(ctx.gbuffer->GetNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-        CD3DX12_RESOURCE_BARRIER::Transition(ctx.gbuffer->GetWorldPos(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        CD3DX12_RESOURCE_BARRIER::Transition(ctx.gbuffer->GetWorldPos(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        CD3DX12_RESOURCE_BARRIER::Transition(ctx.gbuffer->GetVelocity(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
     };
     cmdList->ResourceBarrier(3, barriersToSRV);
 }

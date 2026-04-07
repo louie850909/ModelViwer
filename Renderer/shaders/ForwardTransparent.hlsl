@@ -4,13 +4,8 @@
 cbuffer SceneConstants : register(b0)
 {
     matrix mvp;
+    matrix prevMvp;
     matrix modelMatrix;
-    matrix normalMatrix;
-    float3 cameraPos;
-    float _pad1;
-    float3 lightDir;
-    float _pad2;
-    float4 baseColor;
 };
 
 struct VSInput
@@ -33,7 +28,13 @@ VSOutput VSMain(VSInput input)
     VSOutput output;
     output.pos = mul(float4(input.pos, 1.0f), mvp);
     output.worldPos = mul(float4(input.pos, 1.0f), modelMatrix).xyz;
-    output.normal = normalize(mul(input.normal, (float3x3) normalMatrix));
+    float3x3 m3x3 = (float3x3) modelMatrix;
+    float3x3 adj = transpose(float3x3(
+        cross(m3x3[1], m3x3[2]),
+        cross(m3x3[2], m3x3[0]),
+        cross(m3x3[0], m3x3[1])
+    ));
+    output.normal = normalize(mul(input.normal, adj));
     output.uv = input.uv;
     return output;
 }

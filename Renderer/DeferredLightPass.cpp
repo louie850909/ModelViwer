@@ -52,9 +52,6 @@ void DeferredLightPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassCo
     cmdList->SetDescriptorHeaps(1, gbufferHeaps);
 
     SceneConstants lightCb = {};
-    lightCb.cameraPos = ctx.scene->GetCameraPos();
-    XMStoreFloat3(&lightCb.lightDir, XMVector3Normalize(ctx.forward));
-
     cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &lightCb, 0);
     cmdList->SetGraphicsRootConstantBufferView(2, ctx.lightCB->GetGPUVirtualAddress());
     cmdList->SetGraphicsRootDescriptorTable(1, ctx.gbuffer->GetSrvStart());

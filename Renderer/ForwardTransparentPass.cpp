@@ -100,9 +100,6 @@ void ForwardTransparentPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderP
             SceneConstants cb = {};
             XMStoreFloat4x4(&cb.mvp, XMMatrixTranspose(modelMat * ctx.view * ctx.proj));
             XMStoreFloat4x4(&cb.modelMatrix, XMMatrixTranspose(modelMat));
-            XMStoreFloat4x4(&cb.normalMatrix, XMMatrixInverse(nullptr, modelMat));
-            XMStoreFloat3(&cb.lightDir, XMVector3Normalize(ctx.forward));
-            cb.cameraPos = ctx.scene->GetCameraPos();
             cmdList->SetGraphicsRoot32BitConstants(0, sizeof(SceneConstants) / 4, &cb, 0);
 
             for (int subIdx : node.subMeshIndices) {

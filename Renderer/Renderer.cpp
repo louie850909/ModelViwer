@@ -79,6 +79,7 @@ void Renderer::GetStats(int& vertices, int& polygons, int& drawCalls, float& fra
 
 void Renderer::UpdateLightBuffer() {
     m_mappedLightCB->numLights = (int)m_scene.GetLights().size();
+    m_mappedLightCB->cameraPos = m_scene.GetCameraPos();
     for (size_t i = 0; i < m_scene.GetLights().size() && i < 16; ++i) {
         const auto& l = m_scene.GetLights()[i];
         m_mappedLightCB->lights[i].type = l.type;
@@ -138,6 +139,14 @@ void Renderer::RenderFrame() {
     passCtx.proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
     passCtx.frameCount = m_frameCount++;
 
+    // --- 處理上一幀的矩陣 ---
+    if (passCtx.frameCount == 1) { // 第一幀沒有上一幀，設為當前幀
+        m_prevView = passCtx.view;
+        m_prevProj = passCtx.proj;
+    }
+    passCtx.prevView = m_prevView;
+    passCtx.prevProj = m_prevProj;
+
     if (m_rayTracingEnabled && m_ctx.IsDxrSupported()) {
         // 進入光線追蹤管線
         m_rayTracingPass->Execute(cmdList, passCtx);
@@ -154,6 +163,9 @@ void Renderer::RenderFrame() {
     m_statDrawCalls.store(passCtx.currentDrawCalls, std::memory_order_relaxed);
 
     m_ctx.ExecuteCommandListAndPresent();
+
+    m_prevView = passCtx.view;
+    m_prevProj = passCtx.proj;
     m_renderMutex.unlock();
 }
 
