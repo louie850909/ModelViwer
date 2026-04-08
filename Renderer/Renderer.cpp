@@ -156,6 +156,7 @@ void Renderer::RenderFrame() {
     passCtx.prevView = m_prevView;
     passCtx.prevProj = m_prevProj;
 
+    m_geomPass->Execute(cmdList, passCtx);
     if (m_rayTracingEnabled && m_ctx.IsDxrSupported()) {
         // 進入光線追蹤管線
         m_rayTracingPass->Execute(cmdList, passCtx);
@@ -164,7 +165,6 @@ void Renderer::RenderFrame() {
     }
     else {
         // 進入傳統光柵化管線
-        m_geomPass->Execute(cmdList, passCtx);
         m_lightPass->Execute(cmdList, passCtx);
         m_transparentPass->Execute(cmdList, passCtx);
     }
