@@ -1,3 +1,5 @@
+#include "PBRCommon.hlsli"
+
 RaytracingAccelerationStructure Scene : register(t0, space0);
 RWTexture2D<float4> RenderTarget : register(u0, space0);
 
@@ -163,51 +165,59 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 {
     uint primitiveIndex = PrimitiveIndex();
     
-    // 透過 Index Buffer 找出這三個頂點的索引 (DXGI_FORMAT_R32_UINT，每個 Triangle 佔 12 Bytes)
+    // 透過 Index Buffer 找出這三個頂點的索引
     uint i0 = IndexBuffer.Load(primitiveIndex * 12 + 0);
     uint i1 = IndexBuffer.Load(primitiveIndex * 12 + 4);
     uint i2 = IndexBuffer.Load(primitiveIndex * 12 + 8);
-
-    // 取得 Vertex Normals
+    
     float3 n0 = VertexBuffer[i0].normal;
     float3 n1 = VertexBuffer[i1].normal;
     float3 n2 = VertexBuffer[i2].normal;
-
-    // 取得三個頂點的 UV
+    
     float2 uv0 = VertexBuffer[i0].uv;
     float2 uv1 = VertexBuffer[i1].uv;
     float2 uv2 = VertexBuffer[i2].uv;
-
-    // 利用重心座標進行法線插值
+    
+    // 利用重心座標進行插值
     float3 barycentrics = float3(1.0f - attr.barycentrics.x - attr.barycentrics.y, attr.barycentrics.x, attr.barycentrics.y);
-    float3 localNormal = n0 * barycentrics.x + n1 * barycentrics.y + n2 * barycentrics.z;
-    localNormal = normalize(localNormal);
-
-    // 插值計算交點的 UV
+    float3 localNormal = normalize(n0 * barycentrics.x + n1 * barycentrics.y + n2 * barycentrics.z);
     float2 localUV = uv0 * barycentrics.x + uv1 * barycentrics.y + uv2 * barycentrics.z;
-
-    // 將法線轉至世界空間 (利用 WorldToObject 矩陣的轉置來正確處理非等比縮放)
+    
     float3x4 mInv = WorldToObject3x4();
     float3 worldNormal = normalize(mul(localNormal, (float3x3) mInv));
-
-    // 計算交點的世界座標
     float3 worldPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-
-    float3 baseColor = float3(0.9f, 0.9f, 0.9f);
     
+    // 攝影機視角方向
+    float3 V = normalize(cameraPos - worldPos);
+
     // ==========================================
-    // 從全域陣列中採樣貼圖
+    // 1. 採樣 PBR 貼圖 (Albedo, Roughness, Metallic)
     // ==========================================
+    float3 baseColor = float3(0.9f, 0.9f, 0.9f);
+    float roughness = 0.5f;
+    float metallic = 0.0f;
+
     if (textureIndex != 0xFFFFFFFF)
     {
-        // 必須使用 NonUniformResourceIndex 避免 GPU 執行緒在存取不同貼圖時發生死結
+        // 第一張貼圖：BaseColor
         float4 texColor = allTextures[NonUniformResourceIndex(textureIndex)].SampleLevel(texSampler, localUV, 0);
-        // 將 Albedo 的 sRGB 色彩轉回線性空間 (Linear Space) 讓光照計算更寫實
-        baseColor = pow(texColor.rgb, 2.2f);
+        baseColor = pow(texColor.rgb, 2.2f); // sRGB 轉線性空間
+        
+        // 第二張貼圖：MetallicRoughness (緊接在 BaseColor 後面)
+        float4 mrColor = allTextures[NonUniformResourceIndex(textureIndex + 1)].SampleLevel(texSampler, localUV, 0);
+        // glTF 標準: Green 頻道 = 粗糙度, Blue 頻道 = 金屬度
+        roughness = clamp(mrColor.g, 0.05f, 1.0f); // 避免 0 造成 NaN
+        metallic = saturate(mrColor.b);
     }
 
-    // --- 計算直接光照 ---
+    // 基礎反射率：非金屬預設為 4%，金屬則帶有原本的顏色
+    float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), baseColor, metallic);
+
+    // ==========================================
+    // 2. 計算直接光照 (Direct Illumination + GGX Specular)
+    // ==========================================
     float3 directLighting = float3(0, 0, 0);
+
     for (int i = 0; i < numLights; i++)
     {
         Light L = lights[i];
@@ -215,11 +225,11 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         float attenuation = 1.0f;
         float shadowTMax = 10000.0f;
 
-        if (L.type == 0)
+        if (L.type == 0) // 平行光
         {
             lightDir = normalize(-L.direction);
         }
-        else
+        else // 點光源
         {
             float3 d = L.position - worldPos;
             float dist = length(d);
@@ -232,49 +242,87 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
         if (ndotl > 0.0f)
         {
+            // 陰影判定
             RayDesc shadowRay;
-            shadowRay.Origin = worldPos;
+            shadowRay.Origin = worldPos + worldNormal * 0.001f;
             shadowRay.Direction = lightDir;
             shadowRay.TMin = 0.01f;
             shadowRay.TMax = shadowTMax;
 
             ShadowPayload shadowPayload;
             shadowPayload.isHit = true;
-
-            TraceRay(Scene,
-                     RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
-                     0xFF, 0, 1, 1, shadowRay, shadowPayload);
+            TraceRay(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 0, 1, 1, shadowRay, shadowPayload);
 
             if (!shadowPayload.isHit)
             {
-                directLighting += baseColor * L.color * L.intensity * ndotl * attenuation;
+                // --- PBR 核心光照計算 ---
+                float3 H = normalize(V + lightDir);
+                float NDF = DistributionGGX(worldNormal, H, roughness);
+                float G = GeometrySmith(worldNormal, V, lightDir, roughness);
+                float3 F = FresnelSchlick(max(dot(H, V), 0.0f), F0);
+
+                // 高光項 (Specular)
+                float3 numerator = NDF * G * F;
+                float denominator = 4.0f * max(dot(worldNormal, V), 0.0f) * ndotl + 0.0001f;
+                float3 specular = numerator / denominator;
+
+                // 漫反射項 (Diffuse)
+                float3 kD = (1.0f - F) * (1.0f - metallic);
+                float3 diffuse = kD * baseColor / PI;
+
+                directLighting += (diffuse + specular) * L.color * L.intensity * ndotl * attenuation;
             }
         }
     }
 
-    // 將直接光照乘上衰減權重，累加到輻射率 (Radiance) 中
     payload.radiance += payload.throughput * directLighting;
 
-    // --- GI 間接光反射 (限制最多 1 次 Bounce) ---
+    // ==========================================
+    // 3. 計算間接光照與材質反射 (Indirect Bounce)
+    // ==========================================
     if (payload.depth < 1)
     {
         payload.depth++;
-        
-        // 使用漫反射的重要性採樣 (Cosine-Weighted)
-        // 此處 PDF = cos(theta)/PI, 而 Lambertian BRDF = BaseColor/PI
-        // 相除後恰好為 BaseColor，無需再乘上 ndotl 或除以 PI
-        payload.throughput *= baseColor;
 
-        // 取得半球面上隨機彈跳的方向
-        float3 bounceDir = getCosineWeightedSample(worldNormal, payload.seed);
+        // 計算菲涅爾效應，並以此做為發生「鏡面反射」的機率
+        float3 F = FresnelSchlick(max(dot(worldNormal, V), 0.0f), F0);
+        float specProbability = lerp(max(F.r, max(F.g, F.b)), 1.0f, metallic);
+        specProbability = clamp(specProbability, 0.05f, 0.95f); // 確保機率不為絕對的 0 或 1
 
-        RayDesc bounceRay;
-        bounceRay.Origin = worldPos;
-        bounceRay.Direction = bounceDir;
-        bounceRay.TMin = 0.01f;
-        bounceRay.TMax = 10000.0f;
+        float randomVal = rand(payload.seed);
+        float3 bounceDir;
 
-        // 遞迴發射間接光線，下一層的顏色會自動加到 payload 中
-        TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, bounceRay, payload);
+        if (randomVal < specProbability)
+        {
+            // 【走鏡面反射路徑】(例如金屬、光滑表面)
+            float3 reflectDir = reflect(-V, worldNormal);
+            
+            // 根據粗糙度 (Roughness) 加入反射方向的隨機抖動，實現模糊反射
+            float3 randomHemisphereDir = getCosineWeightedSample(reflectDir, payload.seed);
+            bounceDir = normalize(lerp(reflectDir, randomHemisphereDir, roughness * roughness));
+
+            // 將能量除以機率，確保能量守恆
+            payload.throughput *= F / specProbability;
+        }
+        else
+        {
+            // 【走漫反射路徑】(例如粗糙表面、非金屬)
+            bounceDir = getCosineWeightedSample(worldNormal, payload.seed);
+            
+            float3 kD = (1.0f - F) * (1.0f - metallic);
+            payload.throughput *= (kD * baseColor) / (1.0f - specProbability);
+        }
+
+        // 發射下一彈跳的光線
+        if (dot(bounceDir, worldNormal) > 0.0f)
+        {
+            RayDesc bounceRay;
+            bounceRay.Origin = worldPos + worldNormal * 0.001f;
+            bounceRay.Direction = bounceDir;
+            bounceRay.TMin = 0.01f;
+            bounceRay.TMax = 10000.0f;
+
+            TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, bounceRay, payload);
+        }
     }
 }
