@@ -1,13 +1,6 @@
 #include "PBRCommon.hlsli"
 #include "LightDef.hlsli"
 
-cbuffer SceneConstants : register(b0)
-{
-    matrix mvp;
-    matrix prevMvp;
-    matrix modelMatrix;
-};
-
 struct VSOutput
 {
     float4 pos : SV_Position;

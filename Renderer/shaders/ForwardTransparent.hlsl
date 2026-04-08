@@ -1,10 +1,16 @@
 #include "PBRCommon.hlsli"
 #include "LightDef.hlsli"
 
-cbuffer SceneConstants : register(b0)
+cbuffer PassConstants : register(b0)
 {
-    matrix mvp;
-    matrix prevMvp;
+    matrix viewProj;
+    matrix unjitteredViewProj;
+    matrix prevUnjitteredViewProj;
+};
+
+// 由於 LightDef.hlsli 已經佔用了 b1，我們把模型常數綁在 b2
+cbuffer ObjectConstants : register(b2)
+{
     matrix modelMatrix;
 };
 
@@ -26,8 +32,9 @@ struct VSOutput
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
-    output.pos = mul(float4(input.pos, 1.0f), mvp);
-    output.worldPos = mul(float4(input.pos, 1.0f), modelMatrix).xyz;
+    float4 worldPos = mul(float4(input.pos, 1.0f), modelMatrix);
+    output.worldPos = worldPos.xyz;
+    output.pos = mul(worldPos, viewProj);
     float3x3 m3x3 = (float3x3) modelMatrix;
     float3x3 adj = transpose(float3x3(
         cross(m3x3[1], m3x3[2]),

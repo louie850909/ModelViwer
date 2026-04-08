@@ -45,6 +45,17 @@ private:
     UINT m_frameCount = 0;
     DirectX::XMMATRIX m_prevView = DirectX::XMMatrixIdentity();
     DirectX::XMMATRIX m_prevProj = DirectX::XMMatrixIdentity();
+    DirectX::XMMATRIX m_prevUnjitteredProj = DirectX::XMMatrixIdentity();
+
+    // 全域相機常數緩衝區結構
+    struct PassConstants {
+        DirectX::XMFLOAT4X4 viewProj;
+        DirectX::XMFLOAT4X4 unjitteredViewProj;
+        DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
+    };
+    ComPtr<ID3D12Resource> m_passCameraCB;
+    PassConstants* m_mappedPassCameraCB = nullptr;
+
     void UpdateLightBuffer();
 
     bool m_rayTracingEnabled = false;

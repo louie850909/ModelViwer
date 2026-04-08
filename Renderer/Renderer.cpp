@@ -4,6 +4,7 @@
 #include "DeferredLightPass.h"
 #include "ForwardTransparentPass.h"
 #include "RayTracingPass.h"
+#include "Helper.h"
 #include <stdexcept>
 #include <filesystem>
 #include <string>
@@ -27,6 +28,10 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
         auto cbDesc = CD3DX12_RESOURCE_DESC::Buffer((sizeof(LightBufferData) + 255) & ~255);
         m_ctx.GetDevice()->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightCB));
         m_lightCB->Map(0, nullptr, (void**)&m_mappedLightCB);
+
+        auto cbDescPass = CD3DX12_RESOURCE_DESC::Buffer((sizeof(PassConstants) + 255) & ~255);
+        m_ctx.GetDevice()->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDescPass, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_passCameraCB));
+        m_passCameraCB->Map(0, nullptr, (void**)&m_mappedPassCameraCB);
 
         m_gBuffer.Init(m_ctx.GetDevice(), width, height);
 
@@ -145,16 +150,47 @@ void Renderer::RenderFrame() {
     passCtx.lightCB = m_lightCB.Get();
     passCtx.forward = XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), rotation);
     passCtx.view = XMMatrixLookAtLH(eye, eye + passCtx.forward, XMVectorSet(0, 1, 0, 0));
-    passCtx.proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
+
+    // 1. 計算無 Jitter 投影矩陣
+    passCtx.unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
+
+    // 2. 產生 Jitter 偏移
+    int jitterPhaseCount = 16;
+    int jitterIndex = (m_frameCount % jitterPhaseCount) + 1;
+    passCtx.jitterX = Helper::CreateHaltonSequence(jitterIndex, 2) - 0.5f;
+    passCtx.jitterY = Helper::CreateHaltonSequence(jitterIndex, 3) - 0.5f;
+
+    float ndcJitterX = (passCtx.jitterX * 2.0f) / vp.Width;
+    float ndcJitterY = (passCtx.jitterY * 2.0f) / vp.Height;
+
+    // 3. 套用 Jitter 到最終投影矩陣
+    XMFLOAT4X4 projFloat4x4;
+    XMStoreFloat4x4(&projFloat4x4, passCtx.unjitteredProj);
+    projFloat4x4._31 += ndcJitterX;
+    projFloat4x4._32 += ndcJitterY;
+    passCtx.proj = XMLoadFloat4x4(&projFloat4x4);
+
     passCtx.frameCount = m_frameCount++;
 
-    // --- 處理上一幀的矩陣 ---
-    if (passCtx.frameCount == 0) { // 第一幀沒有上一幀，設為當前幀
+    // 4. 處理上一幀歷史紀錄
+    if (passCtx.frameCount == 0) { // 第一幀
         m_prevView = passCtx.view;
         m_prevProj = passCtx.proj;
+        m_prevUnjitteredProj = passCtx.unjitteredProj;
     }
     passCtx.prevView = m_prevView;
     passCtx.prevProj = m_prevProj;
+    passCtx.prevUnjitteredProj = m_prevUnjitteredProj;
+
+    // 5. 計算並寫入 PassConstants
+    XMMATRIX viewProj = passCtx.view * passCtx.proj;
+    XMMATRIX unjitteredViewProj = passCtx.view * passCtx.unjitteredProj;
+    XMMATRIX prevUnjitteredVP = passCtx.prevView * passCtx.prevUnjitteredProj;
+
+    XMStoreFloat4x4(&m_mappedPassCameraCB->viewProj, XMMatrixTranspose(viewProj));
+    XMStoreFloat4x4(&m_mappedPassCameraCB->unjitteredViewProj, XMMatrixTranspose(unjitteredViewProj));
+    XMStoreFloat4x4(&m_mappedPassCameraCB->prevUnjitteredViewProj, XMMatrixTranspose(prevUnjitteredVP));
+    passCtx.passCameraCBAddress = m_passCameraCB->GetGPUVirtualAddress();
 
     m_geomPass->Execute(cmdList, passCtx);
     if (m_rayTracingEnabled && m_ctx.IsDxrSupported()) {
@@ -177,6 +213,7 @@ void Renderer::RenderFrame() {
 
     m_prevView = passCtx.view;
     m_prevProj = passCtx.proj;
+    m_prevUnjitteredProj = passCtx.unjitteredProj;
     m_renderMutex.unlock();
 }
 

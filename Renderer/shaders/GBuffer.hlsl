@@ -1,7 +1,12 @@
-cbuffer SceneConstants : register(b0)
+cbuffer PassConstants : register(b0)
 {
-    matrix mvp;
-    matrix prevMvp;
+    matrix viewProj;
+    matrix unjitteredViewProj;
+    matrix prevUnjitteredViewProj;
+};
+
+cbuffer ObjectConstants : register(b1)
+{
     matrix modelMatrix;
 };
 
@@ -25,8 +30,10 @@ struct VSOutput
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
-    output.pos = mul(float4(input.pos, 1.0f), mvp);
-    output.worldPos = mul(float4(input.pos, 1.0f), modelMatrix).xyz;
+    // 實際的頂點位置使用有 Jitter 的矩陣
+    float4 worldPos = mul(float4(input.pos, 1.0f), modelMatrix);
+    output.worldPos = worldPos.xyz;
+    output.pos = mul(worldPos, viewProj);
     
     // 透過 Adjugate Matrix (伴隨矩陣) 動態推導法線的 Inverse 矩陣
     float3x3 m3x3 = (float3x3) modelMatrix;
@@ -39,9 +46,9 @@ VSOutput VSMain(VSInput input)
     
     output.uv = input.uv;
     
-    // 記錄當前幀與上一幀的 Clip Space 位置 (供 Velocity 運算)
-    output.clipPos = output.pos;
-    output.prevClipPos = mul(float4(input.pos, 1.0f), prevMvp);
+    // 記錄當前幀與上一幀的 Clip Space 位置 (供 Velocity 運算), 必須使用【無 Jitter】的矩陣
+    output.clipPos = mul(worldPos, unjitteredViewProj);
+    output.prevClipPos = mul(worldPos, prevUnjitteredViewProj);
     
     return output;
 }
