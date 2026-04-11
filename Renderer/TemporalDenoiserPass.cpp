@@ -44,7 +44,7 @@ void TemporalDenoiserPass::EnsureResources(ID3D12Device* device, int width, int 
     m_height = height;
 
     auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    auto descColor = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
+    auto descColor = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, 1, 1);
     descColor.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     auto descNormal = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, 1, 1);
     descNormal.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -89,7 +89,7 @@ void TemporalDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPas
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
-    uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateUnorderedAccessView(m_historyDiffuse[m_writeIdx].Get(), nullptr, &uavDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
     device->CreateUnorderedAccessView(m_historySpecular[m_writeIdx].Get(), nullptr, &uavDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
     uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -103,14 +103,14 @@ void TemporalDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPas
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels = 1;
 
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateShaderResourceView(ctx.rawDiffuseGI, &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
     device->CreateShaderResourceView(ctx.rawSpecularGI, &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
 
     srvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
     device->CreateShaderResourceView(ctx.gbuffer->GetVelocity(), &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
 
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateShaderResourceView(m_historyDiffuse[readIdx].Get(), &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
     device->CreateShaderResourceView(m_historySpecular[readIdx].Get(), &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
 

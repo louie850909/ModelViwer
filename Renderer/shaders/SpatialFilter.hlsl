@@ -101,7 +101,15 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     {
         // 最終合成：Diffuse 乘回 Albedo，並加上根據粗糙度模糊完的高光！
         finalDiffuse.rgb *= centerAlbedo;
-        OutputDiffuse[DTid.xy] = float4(finalDiffuse.rgb + finalSpecular.rgb, 1.0f);
+        float3 combined = finalDiffuse.rgb + finalSpecular.rgb;
+        
+        // Reinhard Tone Mapping
+        combined = combined / (combined + float3(1.0f, 1.0f, 1.0f));
+        // Gamma Correction
+        combined = pow(combined, float3(1.0f / 2.2f, 1.0f / 2.2f, 1.0f / 2.2f));
+        
+        //OutputDiffuse[DTid.xy] = float4(combined, 1.0f);
+        OutputDiffuse[DTid.xy] = float4(finalSpecular.rgb * 5.0f, 1.0f); // debug 用：直接輸出模糊後的高光，觀察效果
         OutputSpecular[DTid.xy] = finalSpecular; // 僅佔位用
     }
     else

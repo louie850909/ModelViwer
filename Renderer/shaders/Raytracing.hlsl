@@ -92,10 +92,10 @@ float3 getCosineWeightedSample(float3 n, inout uint seed)
 struct Payload
 {
     float3 diffuse; // 收集到的漫反射能量
-    float3 specular; // 收集到的高光能量
-    float3 throughput; // 光線衰減權重
     uint depth; // 目前彈跳次數
+    float3 specular; // 收集到的高光能量
     uint seed; // 亂數種子
+    float3 throughput; // 光線衰減權重
     bool isSpecularBounce; // 標記這條光線在第一次彈跳時是否走了高光路徑
 };
 
@@ -317,6 +317,7 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     // ==========================================
     if (payload.depth < 1)
     {
+        bool isFirstBounce = (payload.depth == 0);
         payload.depth++;
 
         // 計算菲涅爾效應，並以此做為發生「鏡面反射」的機率
@@ -329,7 +330,7 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         if (randomVal < specProbability)
         {
             // 走鏡面反射路徑
-            if (payload.depth == 1)
+            if (isFirstBounce)
                 payload.isSpecularBounce = true; // 紀錄為高光路徑
 
             float3 reflectDir = reflect(-V, worldNormal);
@@ -344,7 +345,7 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         else
         {
             // 走漫反射路徑
-            if (payload.depth == 1)
+            if (isFirstBounce)
                 payload.isSpecularBounce = false; // 紀錄為漫反射路徑
 
             bounceDir = getCosineWeightedSample(worldNormal, payload.seed);

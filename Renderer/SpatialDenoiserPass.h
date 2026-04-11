@@ -18,6 +18,7 @@ private:
     // 擴充為雙軌 Ping-Pong 緩衝區
     ComPtr<ID3D12Resource> m_pingPongDiffuse[2];
     ComPtr<ID3D12Resource> m_pingPongSpecular[2];
+    ComPtr<ID3D12Resource> m_finalOutput;
 
     ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
 

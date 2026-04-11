@@ -16,28 +16,28 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
     return output;
 }
 
-Texture2D g_AlbedoRough : register(t0);
-Texture2D g_NormalMetal : register(t1);
-Texture2D g_WorldPos : register(t2);
+Texture2D g_Albedo : register(t0);
+Texture2D g_NormalRoughness : register(t1);
+Texture2D g_WorldPosMetallic : register(t2);
 SamplerState g_sampler : register(s0);
 
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 {
-    float4 albedoRough = g_AlbedoRough.Sample(g_sampler, uv);
-    float4 normalMetal = g_NormalMetal.Sample(g_sampler, uv);
-    float4 worldPos = g_WorldPos.Sample(g_sampler, uv);
+    float4 albedoTex = g_Albedo.Sample(g_sampler, uv);
+    float4 normalRoughness = g_NormalRoughness.Sample(g_sampler, uv);
+    float4 worldPosMetallic = g_WorldPosMetallic.Sample(g_sampler, uv);
 
     // 如果是背景 (法線長度為0，或自訂標記)，直接輸出背景色
-    if (length(normalMetal.rgb) < 0.1f)
+    if (length(normalRoughness.rgb) < 0.1f)
     {
         return float4(0.2f, 0.2f, 0.2f, 1.0f);
     }
 
-    float3 albedo = albedoRough.rgb;
-    float roughness = albedoRough.a;
-    float3 N = normalize(normalMetal.rgb);
-    float metallic = normalMetal.a;
-    float3 P = worldPos.xyz;
+    float3 albedo = albedoTex.rgb;
+    float roughness = normalRoughness.a;
+    float3 N = normalize(normalRoughness.rgb);
+    float metallic = worldPosMetallic.a;
+    float3 P = worldPosMetallic.xyz;
     float3 V = normalize(cameraPos - P);
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, metallic);
 

@@ -39,15 +39,24 @@ void SpatialDenoiserPass::EnsureResources(ID3D12Device* device, int width, int h
     m_width = width; m_height = height;
 
     auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
-    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    // Ping-Pong 貼圖維持 HDR 用於降噪運算
+    auto descHDR = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, 1, 1);
+    descHDR.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    // 最終輸出貼圖為 UNORM，負責相容 BackBuffer
+    auto descLDR = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
+    descLDR.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     for (int i = 0; i < 2; ++i) {
         m_pingPongDiffuse[i].Reset();
         m_pingPongSpecular[i].Reset();
-        device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_pingPongDiffuse[i]));
-        device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_pingPongSpecular[i]));
+        device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descHDR, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_pingPongDiffuse[i]));
+        device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descHDR, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_pingPongSpecular[i]));
     }
+
+    m_finalOutput.Reset();
+    device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descLDR, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_finalOutput));
 }
 
 void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext& ctx) {
@@ -87,13 +96,22 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
     int numPasses = 4;
     for (int i = 0; i < numPasses; ++i) {
         int stepSize = 1 << i; // 1, 2, 4, 8
+        bool isLastPass = (i == numPasses - 1);
+
+        // 若為最後一個 Pass，將寫入目標導向 m_finalOutput
+        if (isLastPass) {
+            uavDiffuse = m_finalOutput.Get();
+        }
 
         // 綁定 2 個 UAV
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+        // uavDiffuse 在最後一個 Pass 必須切換為 UNORM 讓硬體做 Clamp 轉化
+        uavDesc.Format = isLastPass ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
         device->CreateUnorderedAccessView(uavDiffuse, nullptr, &uavDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize);
+
+        uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         device->CreateUnorderedAccessView(uavSpecular, nullptr, &uavDesc, cpuHandle);
         auto uavGpuHandle = gpuHandle;
         cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(2, srvUavSize);
@@ -105,7 +123,7 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
         srvDesc.Texture2D.MipLevels = 1;
         auto srvGpuHandle = gpuHandle;
 
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; // HDR 格式讀取
         device->CreateShaderResourceView(srvDiffuse, &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
         device->CreateShaderResourceView(srvSpecular, &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
 
@@ -119,8 +137,7 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
         device->CreateShaderResourceView(albedoMap, &srvDesc, cpuHandle); cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
 
         // 傳入 5 個常數 (寬、高、步距、當前 Pass 索引、是否為最後一個 Pass)
-        uint32_t isLastPass = (i == numPasses - 1) ? 1 : 0;
-        uint32_t constants[5] = { (uint32_t)m_width, (uint32_t)m_height, (uint32_t)stepSize, (uint32_t)i, isLastPass };
+        uint32_t constants[5] = { (uint32_t)m_width, (uint32_t)m_height, (uint32_t)stepSize, (uint32_t)i, isLastPass ? 1 : 0 };
 
         cmdList->SetComputeRoot32BitConstants(0, 5, constants, 0);
         cmdList->SetComputeRootDescriptorTable(1, uavGpuHandle);
