@@ -12,11 +12,11 @@ void SpatialDenoiserPass::Init(ID3D12Device* device) {
     CD3DX12_DESCRIPTOR_RANGE1 uavRange;
     uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
     CD3DX12_DESCRIPTOR_RANGE1 srvRange;
-    srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
+    srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
 
     CD3DX12_ROOT_PARAMETER1 rootParams[3];
     // 增加一個 Constant 參數供 stepSize 使用
-    rootParams[0].InitAsConstants(3, 0);
+    rootParams[0].InitAsConstants(5, 0);
     rootParams[1].InitAsDescriptorTable(1, &uavRange);
     rootParams[2].InitAsDescriptorTable(1, &srvRange);
 
@@ -57,6 +57,7 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
     auto inputGI = m_temporalPass->GetDenoisedOutput();
     auto normalMap = ctx.gbuffer->GetNormal();
     auto worldPosMap = ctx.gbuffer->GetWorldPos();
+    auto albedoMap = ctx.gbuffer->GetAlbedo();
 
     // 初始狀態轉換
     D3D12_RESOURCE_BARRIER preCompute[1] = {
@@ -89,7 +90,7 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
         auto uavGpuHandle = gpuHandle;
         cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
 
-        // 綁定 3 個 SRV
+        // 綁定 4 個 SRV
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -108,8 +109,15 @@ void SpatialDenoiserPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPass
         device->CreateShaderResourceView(worldPosMap, &srvDesc, cpuHandle);
         cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
 
-        uint32_t constants[3] = { (uint32_t)m_width, (uint32_t)m_height, (uint32_t)stepSize };
-        cmdList->SetComputeRoot32BitConstants(0, 3, constants, 0);
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        device->CreateShaderResourceView(albedoMap, &srvDesc, cpuHandle);
+        cpuHandle.Offset(1, srvUavSize); gpuHandle.Offset(1, srvUavSize);
+
+        // 傳入 5 個常數 (寬、高、步距、當前 Pass 索引、是否為最後一個 Pass)
+        uint32_t isLastPass = (i == numPasses - 1) ? 1 : 0;
+        uint32_t constants[5] = { (uint32_t)m_width, (uint32_t)m_height, (uint32_t)stepSize, (uint32_t)i, isLastPass };
+
+        cmdList->SetComputeRoot32BitConstants(0, 5, constants, 0);
         cmdList->SetComputeRootDescriptorTable(1, uavGpuHandle);
         cmdList->SetComputeRootDescriptorTable(2, srvGpuHandle);
 
