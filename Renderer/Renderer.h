@@ -11,6 +11,7 @@
 #include <chrono>
 #include <mutex>
 #include <memory>
+#include "HDRILoader.h"
 
 class Renderer {
 public:
@@ -55,6 +56,8 @@ private:
         DirectX::XMFLOAT4X4 viewProj;
         DirectX::XMFLOAT4X4 unjitteredViewProj;
         DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
+        float envIntegral;       // 環境光總能量
+        DirectX::XMFLOAT3 _pad;  // 補齊 16 bytes 對齊
     };
     ComPtr<ID3D12Resource> m_passCameraCB;
     PassConstants* m_mappedPassCameraCB = nullptr;
@@ -81,7 +84,7 @@ private:
     LightBufferData* m_mappedLightCB = nullptr;
 
 	// 環境貼圖資源
-    ComPtr<ID3D12Resource> m_envMapUpload;
+    std::shared_ptr<HDRIResource> m_hdriResource;
 
     // --- 管線模組化 ---
     std::unique_ptr<IRenderPass> m_geomPass;

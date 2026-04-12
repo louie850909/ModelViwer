@@ -1,5 +1,6 @@
 #pragma once
 #include "IRenderPass.h"
+#include "HDRILoader.h"
 
 class RayTracingPass : public IRenderPass {
 public:
@@ -9,7 +10,7 @@ public:
     ID3D12Resource* GetDiffuseOutput() const { return m_diffuseOutput.Get(); }
     ID3D12Resource* GetSpecularOutput() const { return m_specularOutput.Get(); }
 
-    void SetEnvironmentMap(Microsoft::WRL::ComPtr<ID3D12Resource> envMap) {
+    void SetEnvironmentMap(std::shared_ptr<HDRIResource> envMap) {
         m_envMap = envMap;
     }
 
@@ -36,7 +37,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_descriptorHeap; // 供 UAV 使用
 
 	// 環境貼圖資源
-    ComPtr<ID3D12Resource> m_envMap;
+    std::shared_ptr<HDRIResource> m_envMap;
     // 用於初始化時的暫存，之後可釋放
     ComPtr<ID3D12Resource> m_envMapUpload;
 
