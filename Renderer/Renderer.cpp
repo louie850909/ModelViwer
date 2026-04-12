@@ -202,6 +202,7 @@ void Renderer::RenderFrame() {
     XMStoreFloat4x4(&m_mappedPassCameraCB->viewProj, XMMatrixTranspose(viewProj));
     XMStoreFloat4x4(&m_mappedPassCameraCB->unjitteredViewProj, XMMatrixTranspose(unjitteredViewProj));
     XMStoreFloat4x4(&m_mappedPassCameraCB->prevUnjitteredViewProj, XMMatrixTranspose(prevUnjitteredVP));
+    m_mappedPassCameraCB->envIntegral = m_hdriResource ? m_hdriResource->envIntegral : 1.0f;
     passCtx.passCameraCBAddress = m_passCameraCB->GetGPUVirtualAddress();
 
     m_geomPass->Execute(cmdList, passCtx);
@@ -230,33 +231,23 @@ void Renderer::RenderFrame() {
 }
 
 void Renderer::LoadEnvironmentMap(const std::wstring& path) {
-    // 確保不會與渲染執行緒 (RenderFrame) 發生衝突
     std::lock_guard<std::mutex> lock(m_renderMutex);
-    m_ctx.WaitForGpu(); // 等待先前的渲染工作完成
-
+    m_ctx.WaitForGpu();
     m_ctx.ResetCommandList();
     auto cmdList = m_ctx.GetCommandList();
     auto cmdQueue = m_ctx.GetCommandQueue();
 
-    // 呼叫我們封裝好的載入器 (同時保留 m_envMapUpload 避免離開作用域時提早釋放)
-    ComPtr<ID3D12Resource> envTexture = HDRILoader::LoadHDR(m_ctx.GetDevice(), cmdList, path, m_envMapUpload);
+    // 接收新的資源結構
+    m_hdriResource = HDRILoader::LoadHDR(m_ctx.GetDevice(), cmdList, path);
+    if (!m_hdriResource) return;
 
-    if (!envTexture) {
-        // 如果讀取失敗（例如檔案不存在），直接返回，不更新現有貼圖
-        return;
-    }
-
-    // 關閉並執行 CommandList
     cmdList->Close();
     ID3D12CommandList* lists[] = { cmdList };
     cmdQueue->ExecuteCommandLists(1, lists);
-
-    // 嚴格等待 GPU 將紋理完整上傳到 Default Heap
     m_ctx.WaitForGpu();
 
-    // 將上傳好的資源交給光追管線
     if (m_rayTracingPass) {
-        m_rayTracingPass->SetEnvironmentMap(envTexture);
+        m_rayTracingPass->SetEnvironmentMap(m_hdriResource);
     }
 }
 

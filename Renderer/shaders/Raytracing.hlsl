@@ -4,12 +4,16 @@ RaytracingAccelerationStructure Scene : register(t0, space0);
 RWTexture2D<float4> DiffuseTarget : register(u0, space0);
 RWTexture2D<float4> SpecularTarget : register(u1, space0);
 Texture2D<float4> EnvMap : register(t1, space0);
+Buffer<float> EnvMarginalCDF : register(t2, space0); // 邊緣機率分佈 (1D)
+Buffer<float> EnvConditionalCDF : register(t3, space0); // 條件機率分佈 (2D)
 
 cbuffer CameraParams : register(b0, space0)
 {
     float4x4 viewProjInv;
     float3 cameraPos;
     uint frameCount;
+    float envIntegral; // 環境光總能量 (供 PDF 計算)
+    float3 _padCamera; // 補齊 16 bytes 對齊
 };
 
 struct Light
@@ -126,6 +130,79 @@ float2 GetSphericalUV(float3 v)
 }
 
 // ==========================================
+// HDRI 輔助搜尋與採樣 (NEE 核心)
+// ==========================================
+uint FindIntervalMarginal(float u, uint EnvHeight)
+{
+    uint left = 0;
+    uint right = EnvHeight - 1;
+    while (left < right)
+    {
+        uint mid = (left + right) >> 1;
+        if (EnvMarginalCDF[mid] < u)
+            left = mid + 1;
+        else
+            right = mid;
+    }
+    return left;
+}
+
+uint FindIntervalConditional(uint y, float u, uint EnvWidth)
+{
+    uint left = 0;
+    uint right = EnvWidth - 1;
+    uint offset = y * EnvWidth;
+    while (left < right)
+    {
+        uint mid = (left + right) >> 1;
+        if (EnvConditionalCDF[offset + mid] < u)
+            left = mid + 1;
+        else
+            right = mid;
+    }
+    return left;
+}
+
+struct EnvSampleResult
+{
+    float3 direction;
+    float3 color;
+    float pdf;
+};
+
+EnvSampleResult SampleEnv(float2 u, float envInt)
+{
+    uint EnvWidth, EnvHeight;
+    EnvMap.GetDimensions(EnvWidth, EnvHeight);
+
+    // 透過二分搜尋取得對應的高亮度像素位置
+    uint y = FindIntervalMarginal(u.y, EnvHeight);
+    uint x = FindIntervalConditional(y, u.x, EnvWidth);
+    float2 uv = float2((x + 0.5f) / EnvWidth, (y + 0.5f) / EnvHeight);
+
+    // 將 UV 轉回 3D 空間方向 (反解 GetSphericalUV)
+    float v_real = 1.0f - uv.y;
+    float phi = (uv.x - 0.5f) * 2.0f * PI;
+    float theta = (v_real - 0.5f) * PI;
+
+    float3 dir;
+    dir.y = sin(theta);
+    float cosTheta = cos(theta);
+    dir.z = sin(phi) * cosTheta;
+    dir.x = cos(phi) * cosTheta;
+
+    float3 color = EnvMap.SampleLevel(texSampler, uv, 0).rgb;
+    float luma = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+
+    EnvSampleResult res;
+    res.direction = normalize(dir);
+    res.color = color;
+    // 將亮度除以總能量，得到該方向的機率密度 (PDF)
+    res.pdf = max(luma / max(envInt, 0.0001f), 0.0001f);
+    return res;
+}
+
+// ==========================================
 // Payloads
 // ==========================================
 struct Payload
@@ -136,6 +213,8 @@ struct Payload
     uint seed; // 亂數種子
     float3 throughput; // 光線衰減權重
     bool isSpecularBounce; // 標記這條光線在第一次彈跳時是否走了高光路徑
+    float lastRayPdf; // 上一段光線的 BRDF 機率密度
+    float lastRoughness; // 上一段反射表面的粗糙度
 };
 
 struct ShadowPayload
@@ -158,16 +237,34 @@ void Miss(inout Payload payload)
 {
     float3 rayDir = WorldRayDirection();
     float2 envUV = GetSphericalUV(rayDir);
-    
-    // 採樣 HDRI，光追中需明確指定 MipLevel (通常設為 0)
-    // 未來可將 1.0f 提取至 CameraParams CB 中作為動態的 Exposure / EnvIntensity
-    float3 skyColor = EnvMap.SampleLevel(texSampler, envUV, 0).rgb * 1.0f;
+    float3 skyColor = EnvMap.SampleLevel(texSampler, envUV, 0).rgb;
 
-    // 根據路徑屬性，將天空顏色存入對應的能量槽
-    if (payload.depth == 0)
+    // 計算我們如果用 NEE 去採樣這片天空，機率密度是多少
+    float luma = dot(skyColor, float3(0.2126f, 0.7152f, 0.0722f));
+    float pdf_env = max(luma / max(envIntegral, 0.0001f), 0.0001f);
+
+    float misWeight = 1.0f;
+    
+    // 如果這是一條間接反彈射線，執行 MIS
+    if (payload.depth > 0)
     {
-        payload.diffuse += payload.throughput * skyColor;
+        if (payload.lastRoughness < 0.05f)
+        {
+            // 非常光滑的表面 (近乎鏡面)，NEE 很難主動採樣到，這時完全依賴 BRDF 盲射
+            misWeight = 1.0f;
+        }
+        else
+        {
+            // Power Heuristic 公式: BRDF² / (BRDF² + ENV²)
+            float pdf_brdf = payload.lastRayPdf;
+            misWeight = (pdf_brdf * pdf_brdf) / (pdf_brdf * pdf_brdf + pdf_env * pdf_env);
+        }
     }
+
+    skyColor *= misWeight;
+
+    if (payload.depth == 0)
+        payload.diffuse += payload.throughput * skyColor;
     else
     {
         if (payload.isSpecularBounce)
@@ -193,11 +290,8 @@ void RayGen()
     float3 accumDiffuse = float3(0, 0, 0);
     float3 accumSpecular = float3(0, 0, 0);
 
-    // 使用 IGN 結合時間與空間，產生低差異性的亂數基底
-    // 每幀加上一個基於黃金比例的偏移量，打亂時間軸的規律，避免雜訊固定在畫面上
-    float frameOffset = (float) (frameCount % 256) * 1.61803398f;
-    float spatialTemporalNoise = IGN(float2(launchIndex.x, launchIndex.y) + frameOffset);
-
+    uint linearIndex = launchIndex.y * launchDim.x + launchIndex.x;
+    
     [unroll]
     for (uint s = 0; s < SPP; ++s)
     {
@@ -207,10 +301,10 @@ void RayGen()
         payload.throughput = float3(1, 1, 1);
         payload.depth = 0;
         payload.isSpecularBounce = false;
+        payload.lastRayPdf = 0.0f;
+        payload.lastRoughness = 0.0f;
         
-        // 將 IGN 的浮點數轉為 uint，再丟給 pcg_hash 徹底攪拌
-        // 這樣既保留了 IGN 的空間均勻性，又具備 pcg_hash 的去關聯性
-        payload.seed = pcg_hash(asuint(spatialTemporalNoise) ^ (s * 114514u));
+        payload.seed = pcg_hash(linearIndex ^ (frameCount * 114514u) ^ (s * 1973u));
 
         RayDesc ray;
         ray.Origin = cameraPos;
@@ -219,6 +313,18 @@ void RayGen()
         ray.TMax = 10000.0f;
 
         TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
+
+        // 螢火蟲抑制 (Firefly Clamping)
+        // 限制單次光線反彈帶回來的最大能量，避免 HDRI 極亮點摧毀時域累積的歷史
+        const float MAX_RADIANCE = 20.0f; // 可視您的 HDRI 亮度上下微調此數值
+
+        float lumaD = dot(payload.diffuse, float3(0.2126f, 0.7152f, 0.0722f));
+        if (lumaD > MAX_RADIANCE) 
+            payload.diffuse *= (MAX_RADIANCE / lumaD);
+
+        float lumaS = dot(payload.specular, float3(0.2126f, 0.7152f, 0.0722f));
+        if (lumaS > MAX_RADIANCE) 
+            payload.specular *= (MAX_RADIANCE / lumaS);
 
         accumDiffuse += payload.diffuse;
         accumSpecular += payload.specular;
@@ -411,6 +517,73 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
             }
         }
     }
+    
+    
+    float3 F_bounce = FresnelSchlick(max(dot(worldNormal, V), 0.0f), F0);
+    float specProbability = clamp(lerp(max(F_bounce.r, max(F_bounce.g, F_bounce.b)), 1.0f, metallic), 0.05f, 0.95f);
+    // ==========================================
+    // 2.5 環境光直接採樣 (Next Event Estimation + MIS)
+    // ==========================================
+    // 對於有一定粗糙度的表面，主動尋找 HDRI 中的高亮點
+    if (roughness >= 0.05f)
+    {
+        float2 uEnv = float2(rand(payload.seed), rand(payload.seed));
+        EnvSampleResult envSample = SampleEnv(uEnv, envIntegral);
+
+        float ndotl_env = dot(worldNormal, envSample.direction);
+        if (ndotl_env > 0.0f)
+        {
+            RayDesc shadowRayEnv;
+            shadowRayEnv.Origin = worldPos + worldNormal * 0.001f;
+            shadowRayEnv.Direction = envSample.direction;
+            shadowRayEnv.TMin = 0.01f;
+            shadowRayEnv.TMax = 10000.0f;
+
+            ShadowPayload shadowPayloadEnv;
+            shadowPayloadEnv.isHit = true;
+            TraceRay(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 0, 1, 1, shadowRayEnv, shadowPayloadEnv);
+
+            if (!shadowPayloadEnv.isHit)
+            {
+                float3 H = normalize(V + envSample.direction);
+                float NDF = DistributionGGX(worldNormal, H, roughness);
+                float G = GeometrySmith(worldNormal, V, envSample.direction, roughness);
+                float3 F = FresnelSchlick(max(dot(H, V), 0.0f), F0);
+
+                float3 numerator = NDF * G * F;
+                float denominator = 4.0f * max(dot(worldNormal, V), 0.0f) * ndotl_env + 0.0001f;
+                float3 specular = numerator / denominator;
+
+                float3 kD = (1.0f - F) * (1.0f - metallic);
+                float3 diff = kD * baseColor / PI;
+
+                // --- MIS 評估：計算 BRDF PDF ---
+                float G1 = GeometrySchlickGGX(max(dot(worldNormal, V), 0.0f), roughness);
+                float pdf_specular = (NDF * G1) / (4.0f * max(dot(worldNormal, V), 0.0f) + 0.0001f);
+                float pdf_diffuse = ndotl_env / PI;
+                float pdf_brdf = lerp(pdf_diffuse, pdf_specular, specProbability);
+
+                // Power Heuristic 公式: ENV² / (ENV² + BRDF²)
+                float misWeight = (envSample.pdf * envSample.pdf) / (envSample.pdf * envSample.pdf + pdf_brdf * pdf_brdf);
+
+                float3 neeContribDiffuse = diff * envSample.color * ndotl_env * misWeight / envSample.pdf;
+                float3 neeContribSpecular = specular * envSample.color * ndotl_env * misWeight / envSample.pdf;
+
+                if (payload.depth == 0)
+                {
+                    payload.diffuse += payload.throughput * neeContribDiffuse;
+                    payload.specular += payload.throughput * neeContribSpecular;
+                }
+                else
+                {
+                    if (payload.isSpecularBounce)
+                        payload.specular += payload.throughput * (neeContribDiffuse + neeContribSpecular);
+                    else
+                        payload.diffuse += payload.throughput * (neeContribDiffuse + neeContribSpecular);
+                }
+            }
+        }
+    }
 
     // ==========================================
     // 3. 計算間接光照與材質反射 (Indirect Bounce)
@@ -420,8 +593,6 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         bool isFirstBounce = (payload.depth == 0); // ← 必須在 depth++ 之前
         payload.depth++;
 
-        float3 F_bounce = FresnelSchlick(max(dot(worldNormal, V), 0.0f), F0);
-        float specProbability = clamp(lerp(max(F_bounce.r, max(F_bounce.g, F_bounce.b)), 1.0f, metallic), 0.05f, 0.95f);
         float randomVal = rand(payload.seed);
 
         if (transmissionFactor > 0.0f)
@@ -527,6 +698,31 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
                 bounceRay.Direction = bounceDir;
                 bounceRay.TMin = 0.01f;
                 bounceRay.TMax = 10000.0f;
+                
+                // --- 準備發射反彈射線之前 ---
+                if (transmissionFactor > 0.0f)
+                {
+                    // 玻璃與折射視為純 Delta Function 鏡面
+                    payload.lastRayPdf = 1.0f;
+                    payload.lastRoughness = 0.0f;
+                }
+                else
+                {
+                    // 一般材質：評估這條反射路徑的 BRDF PDF
+                    float pdf_specular_bounce = 0.0f;
+                    float3 bounceH = normalize(V + bounceDir);
+                    if (dot(worldNormal, bounceDir) > 0.0f)
+                    {
+                        float bounceD = DistributionGGX(worldNormal, bounceH, roughness);
+                        float bounceG1 = GeometrySchlickGGX(max(dot(worldNormal, V), 0.0f), roughness);
+                        pdf_specular_bounce = (bounceD * bounceG1) / (4.0f * max(dot(V, worldNormal), 0.0f) + 0.0001f);
+                    }
+                    float pdf_diffuse_bounce = max(dot(worldNormal, bounceDir), 0.0f) / PI;
+        
+                    payload.lastRayPdf = lerp(pdf_diffuse_bounce, pdf_specular_bounce, specProbability);
+                    payload.lastRoughness = roughness;
+                }
+                
                 TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, bounceRay, payload);
             }
         }

@@ -11,7 +11,7 @@ void RayTracingPass::CreateRootSignature(ID3D12Device5* device) {
 
     // 專屬 EnvMap 的 Descriptor Table 範圍 (t1, space0)
     CD3DX12_DESCRIPTOR_RANGE1 envRange;
-    envRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
+    envRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
 
     CD3DX12_ROOT_PARAMETER1 rootParams[6];
     rootParams[0].InitAsDescriptorTable(1, &uavRange);                 // u0, u1: 輸出貼圖
@@ -71,7 +71,7 @@ void RayTracingPass::CreatePipelineState(ID3D12Device5* device) {
     // 3. Shader Config (Payload 大小)
     D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
     // (diffuse 12 + specular 12 + throughput 12 + depth 4 + seed 4 + bool 4)
-    shaderConfig.MaxPayloadSizeInBytes = 48;
+    shaderConfig.MaxPayloadSizeInBytes = 64;
     shaderConfig.MaxAttributeSizeInBytes = 8;
     subobjects[index++] = { D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig };
 
@@ -139,10 +139,10 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
     // HitGroup 起始偏移量往後推
     uint8_t* hitGroupData = pData + 192;
 
-    // 起點為 3 (索引 0,1 給 UAV, 索引 2 給 EnvMap)
-    UINT destHeapIndex = 3;
+    // 起點為 5 (索引 0,1: UAV, 索引 2,3,4: EnvMap & CDFs)
+    UINT destHeapIndex = 5;
     UINT srvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE destHandle(m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 3, srvDescSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE destHandle(m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 5, srvDescSize);
 
     for (auto& inst : ctx.scene->GetMeshes()) {
         auto& mesh = inst.mesh;
@@ -154,7 +154,7 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
         if (numMats == 0) numMats = 1; // 至少會有一個預設材質
 
         for (UINT m = 0; m < numMats; ++m) {
-            matToGlobalIdx.push_back(destHeapIndex - 3); // ★ 減 3 對齊 HLSL 的陣列索引 0
+            matToGlobalIdx.push_back(destHeapIndex - 5); // ★ 減 5 對齊 HLSL 的陣列索引 0
 
 			// 每個材質包含 BaseColor, MetallicRoughness, Normal 三種貼圖
             for (int t = 0; t < 3; ++t) {
@@ -388,23 +388,47 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     m_mappedCameraCB->frameCount = ctx.frameCount;
 
     UINT srvDescSize = ctx.gfx->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto device = ctx.gfx->GetDevice();
 
-    // 動態建立 EnvMap 的 SRV (放置於 Heap 的 Index 2)
-    CD3DX12_CPU_DESCRIPTOR_HANDLE envCpuHandle(m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, srvDescSize);
-    D3D12_SHADER_RESOURCE_VIEW_DESC envSrvDesc = {};
-    envSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    envSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handleTex(m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, srvDescSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handleMarginal(handleTex, 1, srvDescSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handleCond(handleMarginal, 1, srvDescSize);
 
     if (m_envMap) {
-        envSrvDesc.Format = m_envMap->GetDesc().Format;
-        envSrvDesc.Texture2D.MipLevels = m_envMap->GetDesc().MipLevels;
-        ctx.gfx->GetDevice()->CreateShaderResourceView(m_envMap.Get(), &envSrvDesc, envCpuHandle);
-    }
-    else {
-        // 安全防護：若尚未載入 HDRI，建立一個合法的 Null Descriptor，避免 DX12 崩潰
-        envSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        envSrvDesc.Texture2D.MipLevels = 1;
-        ctx.gfx->GetDevice()->CreateShaderResourceView(nullptr, &envSrvDesc, envCpuHandle);
+        // 1. EnvMap Texture (t1)
+        D3D12_SHADER_RESOURCE_VIEW_DESC texDesc = {};
+        texDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        texDesc.Format = m_envMap->texture->GetDesc().Format;
+        texDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        texDesc.Texture2D.MipLevels = m_envMap->texture->GetDesc().MipLevels;
+        device->CreateShaderResourceView(m_envMap->texture.Get(), &texDesc, handleTex);
+
+        // 2. Marginal CDF Buffer (t2)
+        D3D12_SHADER_RESOURCE_VIEW_DESC bufDesc = {};
+        bufDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        bufDesc.Format = DXGI_FORMAT_R32_FLOAT; // 以 float 陣列讀取
+        bufDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        bufDesc.Buffer.FirstElement = 0;
+        bufDesc.Buffer.NumElements = m_envMap->height;
+        device->CreateShaderResourceView(m_envMap->marginalCDF.Get(), &bufDesc, handleMarginal);
+
+        // 3. Conditional CDF Buffer (t3)
+        bufDesc.Buffer.NumElements = m_envMap->width * m_envMap->height;
+        device->CreateShaderResourceView(m_envMap->conditionalCDF.Get(), &bufDesc, handleCond);
+    } else {
+        // 防呆 Null Descriptor
+        D3D12_SHADER_RESOURCE_VIEW_DESC nullTex = {};
+        nullTex.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        nullTex.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nullTex.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(nullptr, &nullTex, handleTex);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC nullBuf = {};
+        nullBuf.Format = DXGI_FORMAT_R32_FLOAT;
+        nullBuf.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nullBuf.Buffer.NumElements = 1;
+        device->CreateShaderResourceView(nullptr, &nullBuf, handleMarginal);
+        device->CreateShaderResourceView(nullptr, &nullBuf, handleCond);
     }
 
     // 綁定 Root 參數
@@ -413,11 +437,11 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     cmdList4->SetComputeRootConstantBufferView(2, m_cameraCB->GetGPUVirtualAddress());                // Camera
     cmdList4->SetComputeRootConstantBufferView(3, ctx.lightCB->GetGPUVirtualAddress());               // Light
 
-    // 綁定全域的貼圖陣列 (指向 Heap 的 index 3)
-    CD3DX12_GPU_DESCRIPTOR_HANDLE matTable(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, srvDescSize);
+    // 綁定材質表 (指向 Index 5)
+    CD3DX12_GPU_DESCRIPTOR_HANDLE matTable(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 5, srvDescSize);
     cmdList4->SetComputeRootDescriptorTable(4, matTable);
 
-    // 綁定 EnvMap (指向 Heap 的 index 2)
+    // 綁定環境光表 (指向 Index 2，由於 Range 設為 3，它會自動抓取 2,3,4)
     CD3DX12_GPU_DESCRIPTOR_HANDLE envTable(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 2, srvDescSize);
     cmdList4->SetComputeRootDescriptorTable(5, envTable);
 
