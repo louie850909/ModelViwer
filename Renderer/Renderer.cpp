@@ -155,7 +155,7 @@ void Renderer::RenderFrame() {
     passCtx.view = XMMatrixLookAtLH(eye, eye + passCtx.forward, XMVectorSet(0, 1, 0, 0));
 
     // 1. 計算無 Jitter 投影矩陣
-    passCtx.unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
+    passCtx.unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.01f, 5000.f);
 
     // 判斷是否需要啟用 Jitter (只有在光追/Temporal Pass 開啟時才需要)
     bool useTemporalJitter = (m_rayTracingEnabled && m_ctx.IsDxrSupported());
