@@ -57,6 +57,8 @@ bool Renderer::Init(IUnknown* panelUnknown, int width, int height) {
             m_spatialDenoiserPass->SetTemporalPass(m_temporalDenoiserPass.get()); // 綁定關聯
             m_spatialDenoiserPass->Init(m_ctx.GetDevice());
         }
+        m_postProcessPass = std::make_unique<PostProcessPass>();
+        m_postProcessPass->Init(m_ctx.GetDevice());
 
         m_lastFrameTime = std::chrono::high_resolution_clock::now();
         return true;
@@ -153,7 +155,7 @@ void Renderer::RenderFrame() {
     passCtx.view = XMMatrixLookAtLH(eye, eye + passCtx.forward, XMVectorSet(0, 1, 0, 0));
 
     // 1. 計算無 Jitter 投影矩陣
-    passCtx.unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.1f, 5000.f);
+    passCtx.unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), vp.Width / vp.Height, 0.01f, 5000.f);
 
     // 判斷是否需要啟用 Jitter (只有在光追/Temporal Pass 開啟時才需要)
     bool useTemporalJitter = (m_rayTracingEnabled && m_ctx.IsDxrSupported());
@@ -211,6 +213,11 @@ void Renderer::RenderFrame() {
         m_rayTracingPass->Execute(cmdList, passCtx);
         m_temporalDenoiserPass->Execute(cmdList, passCtx);
         m_spatialDenoiserPass->Execute(cmdList, passCtx);
+
+        // 取得降噪後的組合結果
+        passCtx.rawDiffuseGI = m_spatialDenoiserPass->GetDenoisedOutput();
+        m_postProcessPass->SetSharpness(0.6f);
+        m_postProcessPass->Execute(cmdList, passCtx);
     }
     else {
         // 進入傳統光柵化管線

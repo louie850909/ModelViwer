@@ -215,6 +215,8 @@ struct Payload
     bool isSpecularBounce; // 標記這條光線在第一次彈跳時是否走了高光路徑
     float lastRayPdf; // 上一段光線的 BRDF 機率密度
     float lastRoughness; // 上一段反射表面的粗糙度
+    float coneWidth; // 4 bytes
+    float coneSpreadAngle; // 4 bytes
 };
 
 struct ShadowPayload
@@ -279,6 +281,9 @@ void RayGen()
 {
     uint2 launchIndex = DispatchRaysIndex().xy;
     uint2 launchDim = DispatchRaysDimensions().xy;
+    
+    float fovRadians = 45.0f * (3.14159265f / 180.0f);
+    float pixelSpreadAngle = atan(tan(fovRadians * 0.5f) * 2.0f / (float) launchDim.y);
 
     float2 d = (((float2) launchIndex + 0.5f) / (float2) launchDim) * 2.0f - 1.0f;
     d.y = -d.y;
@@ -303,6 +308,8 @@ void RayGen()
         payload.isSpecularBounce = false;
         payload.lastRayPdf = 0.0f;
         payload.lastRoughness = 0.0f;
+        payload.coneWidth = 0.0f;
+        payload.coneSpreadAngle = pixelSpreadAngle;
         
         payload.seed = pcg_hash(linearIndex ^ (frameCount * 114514u) ^ (s * 1973u));
 
@@ -364,6 +371,40 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     
     // 攝影機視角方向
     float3 V = normalize(cameraPos - worldPos);
+    
+    // Mipmap LOD 計算 (Ray Cone)
+    float hitT = RayTCurrent();
+    float currentConeWidth = payload.coneWidth + (payload.coneSpreadAngle * hitT);
+    float lod = 0.0f;
+
+    if (textureIndex != 0xFFFFFFFF)
+    {
+        // 1. 取得 Object Space 頂點並利用 ObjectToWorld 轉為 World Space 向量
+        float3 p0 = VertexBuffer[i0].position;
+        float3 p1 = VertexBuffer[i1].position;
+        float3 p2 = VertexBuffer[i2].position;
+
+        float3x4 mO2W = ObjectToWorld3x4();
+        float3 worldE1 = mul((float3x3) mO2W, p1 - p0);
+        float3 worldE2 = mul((float3x3) mO2W, p2 - p0);
+        
+        // World Space 面積
+        float worldArea = length(cross(worldE1, worldE2)) * 0.5f;
+
+        // UV Space 面積
+        float uvArea = abs((uv1.x - uv0.x) * (uv2.y - uv0.y) - (uv2.x - uv0.x) * (uv1.y - uv0.y)) * 0.5f;
+
+        // 動態取得當前貼圖的寬高
+        uint texWidth, texHeight;
+        allTextures[NonUniformResourceIndex(textureIndex)].GetDimensions(texWidth, texHeight);
+
+        // 計算覆蓋像素並推導 LOD
+        float footprintArea = 3.14159265f * currentConeWidth * currentConeWidth;
+        float uvFootprintArea = (footprintArea / max(worldArea, 1e-8f)) * uvArea;
+        float texAreaPixels = uvFootprintArea * (float) texWidth * (float) texHeight;
+
+        lod = max(0.0f, 0.5f * log2(max(texAreaPixels, 1e-8f)));
+    }
 
     // ==========================================
     // 1. 採樣 PBR 貼圖 (Albedo, Roughness, Metallic)
@@ -377,14 +418,14 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     if (textureIndex != 0xFFFFFFFF)
     {
         // 有貼圖：貼圖色 * baseColorFactor
-        float4 texColor = allTextures[NonUniformResourceIndex(textureIndex)].SampleLevel(texSampler, localUV, 0);
+        float4 texColor = allTextures[NonUniformResourceIndex(textureIndex)].SampleLevel(texSampler, localUV, lod);
         baseColor = pow(texColor.rgb, 2.2f) * baseColorFactorLinear;
 
-        float4 mrColor = allTextures[NonUniformResourceIndex(textureIndex + 1)].SampleLevel(texSampler, localUV, 0);
+        float4 mrColor = allTextures[NonUniformResourceIndex(textureIndex + 1)].SampleLevel(texSampler, localUV, lod);
         roughness = clamp(mrColor.g, 0.05f, 1.0f);
         metallic = saturate(mrColor.b);
         
-        float3 localNormalMap = allTextures[NonUniformResourceIndex(textureIndex + 2)].SampleLevel(texSampler, localUV, 0).xyz;
+        float3 localNormalMap = allTextures[NonUniformResourceIndex(textureIndex + 2)].SampleLevel(texSampler, localUV, lod).xyz;
         localNormalMap = localNormalMap * 2.0f - 1.0f; // 轉換到 [-1, 1]
         
         // 反轉 Y 軸以修正 glTF (OpenGL) 與 DX12 的法線系統差異
@@ -588,6 +629,10 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     // ==========================================
     if (payload.depth < 2)
     {
+        // 更新 Ray Cone 參數以供下一次反彈使用
+        payload.coneWidth = currentConeWidth;
+        payload.coneSpreadAngle += roughness * 0.1f; // 表面粗糙度會造成後續反彈光線發散
+        
         bool isFirstBounce = (payload.depth == 0); // ← 必須在 depth++ 之前
         payload.depth++;
 
