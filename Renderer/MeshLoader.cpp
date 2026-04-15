@@ -333,6 +333,10 @@ std::shared_ptr<Mesh> MeshLoader::LoadGltf(const std::string& path) {
                     sub.baseColorFactor[3] = static_cast<float>(bcf[3]);
                 }
                 sub.hasBaseColorTexture = (mat.pbrMetallicRoughness.baseColorTexture.index >= 0);
+
+                // pbrMetallicRoughness.roughnessFactor / metallicFactor を解析
+                sub.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+                sub.metallicFactor  = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
             }
             else {
                 sub.isTransparent = false;

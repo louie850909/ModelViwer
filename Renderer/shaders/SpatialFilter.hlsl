@@ -44,7 +44,7 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     float4 centerSpec = InputSpecular[DTid.xy];
     if (passIndex == 0)
     {
-        centerDiff.rgb /= centerAlbedo;
+        //centerDiff.rgb /= centerAlbedo;
         // ==========================================
         // 鏡面ハイライト輝度安定化 (Tonemap Demodulation)
         // 極端な HDR ハイライト値を抑制し、空間ブラー時にハロが爆発しないようにする
@@ -82,7 +82,7 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
             float4 sampleSpec = InputSpecular[samplePos];
             if (passIndex == 0)
             {
-                sampleDiff.rgb /= max(AlbedoMap[samplePos].rgb, 0.001f);
+                //sampleDiff.rgb /= max(AlbedoMap[samplePos].rgb, 0.001f);
                 
                 // サンプル点の輝度安定化
                 float sSpecLuma = dot(sampleSpec.rgb, LUMINANCE_VECTOR);

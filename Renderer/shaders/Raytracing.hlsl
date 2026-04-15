@@ -56,6 +56,8 @@ cbuffer MaterialConstants : register(b0, space1)
     float baseColorFactor_g;
     float baseColorFactor_b;
     float baseColorFactor_a;
+    float roughnessFactor;
+    float metallicFactor;
     uint _matPad;
 };
 
@@ -410,8 +412,10 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
     // 1. PBR テクスチャをサンプリング (Albedo、Roughness、Metallic)
     // ==========================================
     float3 baseColor = float3(0.9f, 0.9f, 0.9f);
-    float roughness = 0.5f;
-    float metallic = 0.0f;
+    // transmission 材質はミラーガラスまで下げられるよう roughness 下限を 0 に緩める
+    float roughnessMin = (transmissionFactor > 0.0f) ? 0.0f : 0.05f;
+    float roughness = clamp(roughnessFactor, roughnessMin, 1.0f);
+    float metallic  = saturate(metallicFactor);
 
     float3 baseColorFactorLinear = float3(baseColorFactor_r, baseColorFactor_g, baseColorFactor_b);
 
@@ -421,9 +425,10 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         float4 texColor = allTextures[NonUniformResourceIndex(textureIndex)].SampleLevel(texSampler, localUV, lod);
         baseColor = pow(texColor.rgb, 2.2f) * baseColorFactorLinear;
 
+        // glTF 仕様: 最終値 = テクスチャ値 * factor
         float4 mrColor = allTextures[NonUniformResourceIndex(textureIndex + 1)].SampleLevel(texSampler, localUV, lod);
-        roughness = clamp(mrColor.g, 0.05f, 1.0f);
-        metallic = saturate(mrColor.b);
+        roughness = clamp(mrColor.g * roughnessFactor, roughnessMin, 1.0f);
+        metallic  = saturate(mrColor.b * metallicFactor);
         
         float3 localNormalMap = allTextures[NonUniformResourceIndex(textureIndex + 2)].SampleLevel(texSampler, localUV, lod).xyz;
         localNormalMap = localNormalMap * 2.0f - 1.0f; // [-1, 1] に変換
@@ -527,8 +532,11 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
                 float3 specular = numerator / denominator;
 
                 // 拡散反射項 (Diffuse)
-                float3 kD = (1.0f - F) * (1.0f - metallic);
-                float3 diff = kD * baseColor / PI;
+                // 透過材質 (ガラス等) は Lambertian 拡散を持たない。
+                // (1-F) のエネルギーは吸収される代わりに屈折光として媒質内に入るため、
+                // diffuse チャンネルに書き込むと不透明な Lambertian 像として見えてしまう。
+                float3 kD = (1.0f - F) * (1.0f - metallic) * (1.0f - transmissionFactor);
+                float3 diff = (payload.depth == 0) ? (kD / PI) : (kD * baseColor / PI);
 
                 float3 currentDirectDiffuse = diff * L.color * L.intensity * ndotl * attenuation;
                 float3 currentDirectSpecular = specular * L.color * L.intensity * ndotl * attenuation;
@@ -593,8 +601,8 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
                 float denominator = 4.0f * max(dot(worldNormal, V), 0.0f) * ndotl_env + 0.0001f;
                 float3 specular = numerator / denominator;
 
-                float3 kD = (1.0f - F) * (1.0f - metallic);
-                float3 diff = kD * baseColor / PI;
+                float3 kD = (1.0f - F) * (1.0f - metallic) * (1.0f - transmissionFactor);
+                float3 diff = (payload.depth == 0) ? (kD / PI) : (kD * baseColor / PI);
 
                 // --- MIS 評価：BRDF PDF を計算 ---
                 float G1 = GeometrySchlickGGX(max(dot(worldNormal, V), 0.0f), roughness);
@@ -642,7 +650,8 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
         {
             // Schlick Fresnel 近似：グレージング角で反射率が高く、正入射ではほぼ全屈折
             float cosTheta = abs(dot(-WorldRayDirection(), worldNormal));
-            float f0_scalar = F0.r;
+            float f0_scalar = (1.0f - ior) / (1.0f + ior);
+            f0_scalar *= f0_scalar;
             float F_schlick = f0_scalar + (1.0f - f0_scalar) * pow(1.0f - cosTheta, 5.0f);
             float fresnelReflect = F_schlick; // 表面反射率のみを考慮し、transmissionFactor は乗算しない
 
@@ -688,13 +697,22 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
             {
                 // ── 屈折透過 ──
                 if (isFirstBounce)
-                    payload.isSpecularBounce = false;
+                    payload.isSpecularBounce = true;
 
                 float3 incomingDir = WorldRayDirection();
-                float cosI = dot(-incomingDir, geoNormal);
-                bool entering = (cosI > 0.0f);
+
+                // 屈折も滑らかなシェーディング法線を使う
+                // ただし TIR / 面裏判定の安定性のため geoNormal で進入判定
+                float cosI_geo = dot(-incomingDir, geoNormal);
+                bool entering = (cosI_geo > 0.0f);
+
+                // シェーディング法線も向きを進行方向側に揃える
+                float3 Ns = worldNormal;
+                if (dot(Ns, geoNormal) < 0.0f)
+                    Ns = -Ns; // まれに反転していたら直す
+                float3 refractNormal = entering ? Ns : -Ns;
+
                 float eta = entering ? (1.0f / ior) : ior;
-                float3 refractNormal = entering ? geoNormal : -geoNormal;
 
                 float3 refractDir = refract(incomingDir, refractNormal, eta);
                 if (dot(refractDir, refractDir) < 0.001f)
@@ -705,11 +723,13 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
                 // baseColor を吸収係数に変換：色が暗いほど吸収が速い
                 // epsilon を加えて log(0) を防ぐ — 純白は吸収なし、純黒は極めて強い吸収
-                float3 absorptionCoeff = -log(max(baseColor, 0.001f));
-
-                // Beer-Lambert 減衰、transmissionFactor を乗算して全体の透過率を制御
-                float3 beerLambert = exp(-absorptionCoeff * pathLength) * transmissionFactor;
-                payload.throughput *= beerLambert / max(refractProb, 0.001f);
+                float3 beerLambert = float3(1, 1, 1);
+                if (!entering)
+                {
+                    float3 absorptionCoeff = -log(max(baseColor, 0.001f));
+                    beerLambert = exp(-absorptionCoeff * pathLength);
+                }
+                payload.throughput *= (beerLambert * transmissionFactor) / max(refractProb, 0.001f);
                 
                 float maxThroughput = max(payload.throughput.r, max(payload.throughput.g, payload.throughput.b));
                 if (maxThroughput < 0.1f)
@@ -757,7 +777,10 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
                     payload.isSpecularBounce = false;
                 bounceDir = getCosineWeightedSample(worldNormal, payload.seed);
                 float3 kD = (1.0f - F_bounce) * (1.0f - metallic);
-                payload.throughput *= (kD * baseColor) / (1.0f - specProbability);
+                if (payload.depth == 0)
+                    payload.throughput *= kD / (1.0f - specProbability);
+                else
+                    payload.throughput *= (kD * baseColor) / (1.0f - specProbability);
             }
 
             if (dot(bounceDir, worldNormal) > 0.0f)

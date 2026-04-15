@@ -108,7 +108,10 @@ void GeometryPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassContext
 
             for (int subIdx : node.subMeshIndices) {
                 const auto& sub = mesh->subMeshes[subIdx];
-                if (sub.isTransparent) continue;
+                // レイトレ時は透明物 (ガラス等) も GBuffer に含める：
+                // denoiser が normal / worldPos / albedo を必要とするため。
+                // ラスタ時は従来通りスキップ (ForwardTransparentPass 側で描画)。
+                if (sub.isTransparent && !ctx.isRayTracingEnabled) continue;
 
                 int matIdx = (sub.materialIndex >= 0 && sub.materialIndex < (int)mesh->texturePaths.size()) ? sub.materialIndex : 0;
                 CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(inst.srvHeap->GetGPUDescriptorHandleForHeapStart(), matIdx * 3, srvDescSize);

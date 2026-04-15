@@ -23,6 +23,10 @@ struct SubMesh {
     // 追加：baseColorFactor (テクスチャなし時のベースカラー)
     float baseColorFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool  hasBaseColorTexture = false;
+
+    // glTF pbrMetallicRoughness factors (MR テクスチャあり時は乗算される)
+    float roughnessFactor = 1.0f;
+    float metallicFactor  = 1.0f;
 };
 
 struct SceneNode {
@@ -63,5 +67,7 @@ struct alignas(4) MaterialConstants {
     float    transmissionFactor;
     float    ior;
     float    baseColorFactor[4];
-    uint32_t _pad;  // 32 bytes にアライメント
+    float    roughnessFactor;
+    float    metallicFactor;
+    uint32_t _pad;  // 40 bytes にアライメント
 };

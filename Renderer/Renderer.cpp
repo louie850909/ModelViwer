@@ -185,6 +185,7 @@ void Renderer::RenderFrame() {
     }
 
     passCtx.frameCount = m_frameCount++;
+    passCtx.isRayTracingEnabled = useTemporalJitter;
 
     // 4. 前フレームの履歴を処理
     if (passCtx.frameCount == 0) { // 第 1 フレーム

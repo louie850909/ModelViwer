@@ -31,6 +31,10 @@ struct RenderPassContext {
 
     // // 現在累積されたフレーム数
     UINT frameCount = 0;
+
+    // レイトレーシング有効時は透明サブメッシュも GBuffer に書き込む必要がある
+    // (denoiser が normal/pos/albedo を参照するため)
+    bool isRayTracingEnabled = false;
     // --- ノイズありの Raw GI ---
     ID3D12Resource* rawDiffuseGI = nullptr;
     ID3D12Resource* rawSpecularGI = nullptr;

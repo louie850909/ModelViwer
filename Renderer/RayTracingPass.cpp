@@ -38,7 +38,7 @@ void RayTracingPass::CreateLocalRootSignature(ID3D12Device5* device) {
     CD3DX12_ROOT_PARAMETER1 localParams[3];
     localParams[0].InitAsShaderResourceView(0, 1); // t0, space1: Index Buffer
     localParams[1].InitAsShaderResourceView(1, 1); // t1, space1: Vertex Buffer
-    localParams[2].InitAsConstants(8, 0, 1, D3D12_SHADER_VISIBILITY_ALL); // b0, space1: textureIndex(1) + transmissionFactor(1) + ior(1) + baseColorFactor(4) = 7 DWORDs → 8 にアライメント
+    localParams[2].InitAsConstants(10, 0, 1, D3D12_SHADER_VISIBILITY_ALL); // b0, space1: textureIndex(1) + transmissionFactor(1) + ior(1) + baseColorFactor(4) + roughnessFactor(1) + metallicFactor(1) = 9 DWORDs → 10 にアライメント
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC localRootSigDesc;
     localRootSigDesc.Init_1_1(3, localParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE);
@@ -220,6 +220,8 @@ void RayTracingPass::BuildSBT(ID3D12Device5* device, RenderPassContext& ctx) {
                 mc->baseColorFactor[1] = sub.baseColorFactor[1];
                 mc->baseColorFactor[2] = sub.baseColorFactor[2];
                 mc->baseColorFactor[3] = sub.baseColorFactor[3];
+                mc->roughnessFactor = sub.roughnessFactor;
+                mc->metallicFactor  = sub.metallicFactor;
                 mc->_pad = 0;
 
                 hitGroupData += hitGroupStride; // 次のレコードに進む
@@ -427,6 +429,7 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     XMStoreFloat4x4(&m_mappedCameraCB->viewProjInv, XMMatrixTranspose(XMMatrixInverse(&det, viewProj)));
     m_mappedCameraCB->cameraPos = ctx.scene->GetCameraPos();
     m_mappedCameraCB->frameCount = ctx.frameCount;
+    m_mappedCameraCB->envIntegral = (m_envMap != nullptr) ? m_envMap->envIntegral : 1.0f;
 
     UINT srvDescSize = ctx.gfx->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto device = ctx.gfx->GetDevice();

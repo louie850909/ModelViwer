@@ -48,6 +48,8 @@ private:
         DirectX::XMFLOAT4X4 viewProjInv;
         DirectX::XMFLOAT3 cameraPos;
         UINT frameCount;
+		float envIntegral;// 環境光の総エネルギー
+        DirectX::XMFLOAT3 _pad;
     };
     CameraParams* m_mappedCameraCB = nullptr;
 
