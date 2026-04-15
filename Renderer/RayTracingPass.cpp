@@ -13,19 +13,24 @@ void RayTracingPass::CreateRootSignature(ID3D12Device5* device) {
     CD3DX12_DESCRIPTOR_RANGE1 envRange;
     envRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
 
-    CD3DX12_ROOT_PARAMETER1 rootParams[6];
+    // GBuffer NormalRoughness SRV (t4, space0) — 透過ピクセル un-jitter 用
+    CD3DX12_DESCRIPTOR_RANGE1 gbufRange;
+    gbufRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
+
+    CD3DX12_ROOT_PARAMETER1 rootParams[7];
     rootParams[0].InitAsDescriptorTable(1, &uavRange);                 // u0, u1: 出力テクスチャ
     rootParams[1].InitAsShaderResourceView(0);                         // t0: TLAS (Buffer は Root SRV 使用可能)
     rootParams[2].InitAsConstantBufferView(0);                         // b0: Camera CB
     rootParams[3].InitAsConstantBufferView(1);                         // b1: Light CB
     rootParams[4].InitAsDescriptorTable(1, &srvRange);                 // t0, space2: 材質 SRV 配列
     rootParams[5].InitAsDescriptorTable(1, &envRange);                 // t1, space0: EnvMap (テクスチャは Table を使用する必要がある)
+    rootParams[6].InitAsDescriptorTable(1, &gbufRange);                // t4, space0: GBuffer NormalRoughness
 
     CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC globalRootSigDesc;
-    globalRootSigDesc.Init_1_1(6, rootParams, 1, &sampler);
+    globalRootSigDesc.Init_1_1(7, rootParams, 1, &sampler);
 
     ComPtr<ID3DBlob> blob, error;
     HRESULT hr = D3DX12SerializeVersionedRootSignature(&globalRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &blob, &error);
@@ -434,6 +439,26 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     m_mappedCameraCB->jitterX = ctx.jitterX * 2.0f / (float)ctx.gfx->GetWidth();
     m_mappedCameraCB->jitterY = ctx.jitterY * 2.0f / (float)ctx.gfx->GetHeight();
 
+    // カメラ速度ベースで un-jitter 強度をフェード:
+    // 静止時は完全 un-jitter (ガラス屈折の firefly 除去)、移動時は通常 jitter (TAA のサブピクセル再構築を保持)
+    // これにより低速パン時のピクセル単位「段階的」な動きを防ぐ。
+    {
+        XMFLOAT3 curPos = ctx.scene->GetCameraPos();
+        float camVel = 0.0f;
+        if (m_hasPrevCamera) {
+            float dx = curPos.x - m_prevCameraPos.x;
+            float dy = curPos.y - m_prevCameraPos.y;
+            float dz = curPos.z - m_prevCameraPos.z;
+            camVel = sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+        m_prevCameraPos = curPos;
+        m_hasPrevCamera = true;
+        // 閾値: 0 → 1.0 (完全 un-jitter), 0.001 以上 → 0.0 (完全 jitter)
+        // シーン単位は小さいため (m 単位想定)、0.001 m/frame = 約 0.06 m/sec @ 60fps で既に動体扱い。
+        float strength = 1.0f - fminf(fmaxf(camVel * 2000.0f, 0.0f), 1.0f);
+        m_mappedCameraCB->unjitterStrength = strength;
+    }
+
     UINT srvDescSize = ctx.gfx->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto device = ctx.gfx->GetDevice();
 
@@ -496,6 +521,20 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, RenderPassConte
     // 環境光テーブルをバインド (Index 2 を指す、Range が 3 に設定されているため 2,3,4 が自動的に取得される)
     CD3DX12_GPU_DESCRIPTOR_HANDLE envTable(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 2, srvDescSize);
     cmdList4->SetComputeRootDescriptorTable(5, envTable);
+
+    // GBuffer NormalRoughness SRV をヒープ末尾 (slot 2047) に作成してバインド
+    const UINT kGBufferSlot = 2047;
+    {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE gbufCpu(m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), kGBufferSlot, srvDescSize);
+        D3D12_SHADER_RESOURCE_VIEW_DESC gbufSrv = {};
+        gbufSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        gbufSrv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        gbufSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        gbufSrv.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(ctx.gbuffer->GetNormalRoughness(), &gbufSrv, gbufCpu);
+    }
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gbufTable(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), kGBufferSlot, srvDescSize);
+    cmdList4->SetComputeRootDescriptorTable(6, gbufTable);
 
     // SBT ブロックの位置とサイズを設定
     D3D12_DISPATCH_RAYS_DESC rayDesc = {};

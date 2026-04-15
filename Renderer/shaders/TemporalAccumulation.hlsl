@@ -226,10 +226,11 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
                     if (dot(nr.xyz, centerNormal) > 0.7f)
                     {
                         float3 s = RawSpecular[sp].rgb;
-                        // 各サンプルに硬 luma 上限 (単発 sun 命中の寄与を制限)
+                        // un-jitter により屈折が決定論的になったため、上限を大きく緩和。
+                        // 単発 firefly のみ狙い撃ちし、本物の高光は残す。
                         float sL = GetLuminance(s);
-                        if (sL > 3.0f)
-                            s *= (3.0f / sL);
+                        if (sL > 8.0f)
+                            s *= (8.0f / sL);
                         wideSum += s;
                         wideCount += 1.0f;
                     }
@@ -239,10 +240,10 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
         if (wideCount > 0.0f)
         {
             currSpecular.rgb = wideSum / wideCount;
-            // 最終 luma 硬 clamp
+            // 最終 luma 緩 clamp (高光を残す)
             float tLuma = GetLuminance(currSpecular.rgb);
-            if (tLuma > 1.5f)
-                currSpecular.rgb *= (1.5f / tLuma);
+            if (tLuma > 5.0f)
+                currSpecular.rgb *= (5.0f / tLuma);
         }
     }
 
@@ -260,9 +261,12 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
         cY_diff = clamp(cY_diff, loDiff, hiDiff);
         currDiffuse.rgb = max(YCoCgToRGB(cY_diff), 0.0f);
 
-        // Specular は硬 clamp (拡張なし)。中心がアウトライヤーなら完全に殺す。
+        // Specular は 15% 余裕を残す (本物の高光の頂点を誤殺しない)
+        float3 rangeSpec = neighborMaxSpec - neighborMinSpec;
+        float3 loSpec = neighborMinSpec - rangeSpec * 0.15f;
+        float3 hiSpec = neighborMaxSpec + rangeSpec * 0.15f;
         float3 cY_spec = RGBToYCoCg(currSpecular.rgb);
-        cY_spec = clamp(cY_spec, neighborMinSpec, neighborMaxSpec);
+        cY_spec = clamp(cY_spec, loSpec, hiSpec);
         currSpecular.rgb = max(YCoCgToRGB(cY_spec), 0.0f);
     }
 
@@ -343,14 +347,30 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     // 静止: 0.01 → 100f EMA、高速移動: 0.30 → 通常の応答性。
     if (isTransmission)
     {
-        float transCap = lerp(0.01f, 0.30f, saturate(velMag * 100.0f));
+        // un-jitter 後は静止時も安全に高めで blend でき、移動時はすぐ追従できる。
+        float transCap = lerp(0.05f, 0.60f, saturate(velMag * 80.0f));
         adaptSpec = min(adaptSpec, transCap);
     }
 
     float blendDiff = lerp(1.0f, adaptDiff, historyValid);
     float blendSpec = lerp(1.0f, adaptSpec, historyValid);
 
-    OutputDiffuse[DTid.xy] = lerp(histDiffuse, currDiffuse, blendDiff);
-    OutputSpecular[DTid.xy] = lerp(histSpecular, currSpecular, blendSpec);
+    // ── Reversible Tonemapped Blending (Karis/Salvi) ──
+    // c / (1 + L) 空間で EMA を取り、暗部の firefly を自動的に抑制する。
+    // 暗所 (L≈0): 入力 L=10 の firefly が 10/11≈0.91 に圧縮 → 混合時の影響が激減
+    // 高光 (L≈2): 2/3≈0.67 とほぼ線形 → 収束・材質鮮明さに影響なし
+    // これにより明るさに応じた自動適応が単一パスで得られる。
+    float3 histDrgb = histDiffuse.rgb / (1.0f + GetLuminance(histDiffuse.rgb));
+    float3 currDrgb = currDiffuse.rgb / (1.0f + GetLuminance(currDiffuse.rgb));
+    float3 outDrgb  = lerp(histDrgb, currDrgb, blendDiff);
+    outDrgb = outDrgb / max(1.0f - GetLuminance(outDrgb), 1e-4f);
+
+    float3 histSrgb = histSpecular.rgb / (1.0f + GetLuminance(histSpecular.rgb));
+    float3 currSrgb = currSpecular.rgb / (1.0f + GetLuminance(currSpecular.rgb));
+    float3 outSrgb  = lerp(histSrgb, currSrgb, blendSpec);
+    outSrgb = outSrgb / max(1.0f - GetLuminance(outSrgb), 1e-4f);
+
+    OutputDiffuse[DTid.xy]  = float4(max(outDrgb, 0.0f), lerp(histDiffuse.a,  currDiffuse.a,  blendDiff));
+    OutputSpecular[DTid.xy] = float4(max(outSrgb, 0.0f), lerp(histSpecular.a, currSpecular.a, blendSpec));
     OutputVariance[DTid.xy] = float2(varianceDiff, varianceSpec);
 }

@@ -217,7 +217,7 @@ void Renderer::RenderFrame() {
 
         // デノイズ後の合成結果を取得
         passCtx.rawDiffuseGI = m_spatialDenoiserPass->GetDenoisedOutput();
-        m_postProcessPass->SetSharpness(0.6f);
+        m_postProcessPass->SetSharpness(0.9f);
         m_postProcessPass->Execute(cmdList, passCtx);
     }
     else {

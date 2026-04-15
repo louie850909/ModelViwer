@@ -51,9 +51,13 @@ private:
 		float envIntegral;// 環境光の総エネルギー
         float jitterX;    // NDC 空間の jitter オフセット (透過ピクセルで無効化するため)
         float jitterY;
-        float _pad;
+        float unjitterStrength; // 1.0 = 完全 un-jitter (静止時), 0.0 = 通常 jitter (移動時)
     };
     CameraParams* m_mappedCameraCB = nullptr;
+
+    // 速度追跡 (un-jitter フェード用)
+    DirectX::XMFLOAT3 m_prevCameraPos = { 0, 0, 0 };
+    bool m_hasPrevCamera = false;
 
 	// SBT 関連パラメータ
     ComPtr<ID3D12RootSignature> m_localRootSig;

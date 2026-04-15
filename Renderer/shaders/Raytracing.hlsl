@@ -6,6 +6,7 @@ RWTexture2D<float4> SpecularTarget : register(u1, space0);
 Texture2D<float4> EnvMap : register(t1, space0);
 Buffer<float> EnvMarginalCDF : register(t2, space0); // 周辺確率分布 (1D)
 Buffer<float> EnvConditionalCDF : register(t3, space0); // 条件付き確率分布 (2D)
+Texture2D<float4> GBufferNormalRoughness : register(t4, space0); // GBuffer normal+roughness (un-jitter 判定用)
 
 cbuffer CameraParams : register(b0, space0)
 {
@@ -13,9 +14,9 @@ cbuffer CameraParams : register(b0, space0)
     float3 cameraPos;
     uint frameCount;
     float envIntegral; // 環境光の総エネルギー (PDF 計算用)
-    float jitterX;     // (予約) NDC オフセット
+    float jitterX;     // NDC オフセット
     float jitterY;
-    float _padCamera;
+    float unjitterStrength; // 1.0 = 完全 un-jitter (静止時), 0.0 = 通常 jitter (移動時)
 };
 
 struct Light
@@ -291,6 +292,18 @@ void RayGen()
 
     float2 d = (((float2) launchIndex + 0.5f) / (float2) launchDim) * 2.0f - 1.0f;
     d.y = -d.y;
+
+    // 透過ピクセル (glass 等) は jitter 由来の屈折ばらつきで temporal が収束しないため、
+    // GBuffer の roughness マーカー(=0.02f)を検出して un-jittered ray を発射する。
+    float4 gbufNR = GBufferNormalRoughness.Load(int3(launchIndex, 0));
+    bool isTransmissionPixel = (gbufNR.w < 0.05f) && (length(gbufNR.xyz) > 0.1f);
+    if (isTransmissionPixel)
+    {
+        // 静止時のみ完全に jitter を打ち消す。カメラ移動時は通常 jitter を維持して
+        // TAA のサブピクセル再構築と滑らかな動きを保持する。
+        d.x -= jitterX * unjitterStrength;
+        d.y += jitterY * unjitterStrength; // d.y は既に反転済みなので符号を反転
+    }
 
     float4 target = mul(float4(d.x, d.y, 1.0f, 1.0f), viewProjInv);
     float3 rayDir = normalize((target.xyz / target.w) - cameraPos);
