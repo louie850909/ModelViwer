@@ -17,7 +17,7 @@ Texture2D<float4> WorldPosMap : register(t3);
 Texture2D<float4> AlbedoMap : register(t4);
 Texture2D<float2> VarianceMap : register(t5);
 
-// 提取亮度的常數向量
+// 輝度抽出用の定数ベクトル
 static const float3 LUMINANCE_VECTOR = float3(0.2126f, 0.7152f, 0.0722f);
 
 [numthreads(8, 8, 1)]
@@ -29,7 +29,7 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     float3 centerNormal = NormalMap[DTid.xy].xyz;
     if (length(centerNormal) < 0.1f)
     {
-        // 天空背景不處理，直接輸出
+        // 空の背景は処理せず、そのまま出力
         OutputDiffuse[DTid.xy] = InputDiffuse[DTid.xy];
         OutputSpecular[DTid.xy] = InputSpecular[DTid.xy];
         return;
@@ -39,26 +39,26 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     float3 centerPos = WorldPosMap[DTid.xy].xyz;
     float3 centerAlbedo = max(AlbedoMap[DTid.xy].rgb, 0.001f);
 
-    // 取得中心點顏色 (確保持續處於 Demodulated 狀態，也就是純光照 Irradiance)
+    // 中心点の色を取得 (常に Demodulated 状態、つまり純粋な照明 Irradiance であることを保証)
     float4 centerDiff = InputDiffuse[DTid.xy];
     float4 centerSpec = InputSpecular[DTid.xy];
     if (passIndex == 0)
     {
-        centerDiff.rgb /= centerAlbedo;
+        //centerDiff.rgb /= centerAlbedo;
         // ==========================================
-        // 高光亮度穩定化 (Tonemap Demodulation)
-        // 壓制極端的高光 HDR 值，避免空間模糊時光暈爆開
+        // 鏡面ハイライト輝度安定化 (Tonemap Demodulation)
+        // 極端な HDR ハイライト値を抑制し、空間ブラー時にハロが爆発しないようにする
         // ==========================================
         float specLuma = dot(centerSpec.rgb, LUMINANCE_VECTOR);
         centerSpec.rgb /= (1.0f + specLuma);
     }
 
-    // ★ 核心 1：計算「純光照」的亮度，而非 Albedo 亮度
+    // ★ コア 1：Albedo 輝度ではなく「純粋な照明」の輝度を計算
     float centerLumaDiff = dot(centerDiff.rgb, LUMINANCE_VECTOR);
     float centerLumaSpec = dot(centerSpec.rgb, LUMINANCE_VECTOR);
 
-    // ★ 核心 2：方差轉標準差 (Standard Deviation)
-    // 方差越大 (噪點越多)，標準差越大，後續的模糊權重就會越寬鬆，強力抹平噪點
+    // ★ コア 2：分散を標準偏差 (Standard Deviation) に変換
+    // 分散が大きいほど (ノイズが多いほど)、標準偏差が大きくなり、後続のブラー重みが緩くなってノイズを強力に平滑化
     float2 centerVar = VarianceMap[DTid.xy].xy;
     float stdDevDiff = sqrt(max(centerVar.x, 0.0001f));
     float stdDevSpec = sqrt(max(centerVar.y, 0.0001f));
@@ -68,8 +68,8 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     float4 sumSpecular = 0.0f;
     float sumWeightSpecular = 0.0f;
 
-    // À-Trous 小波核 3x3 展開 (使用 5x5 會更好，但 3x3 效能較高)
-    const int radius = 1;
+    // À-Trous ウェーブレットカーネル 5x5 展開 (IBL ノイズ対応のため 3x3 から拡大)
+    const int radius = 2;
 
     for (int y = -radius; y <= radius; ++y)
     {
@@ -82,9 +82,9 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
             float4 sampleSpec = InputSpecular[samplePos];
             if (passIndex == 0)
             {
-                sampleDiff.rgb /= max(AlbedoMap[samplePos].rgb, 0.001f);
+                //sampleDiff.rgb /= max(AlbedoMap[samplePos].rgb, 0.001f);
                 
-                // 採樣點的亮度穩定
+                // サンプル点の輝度安定化
                 float sSpecLuma = dot(sampleSpec.rgb, LUMINANCE_VECTOR);
                 sampleSpec.rgb /= (1.0f + sSpecLuma);
             }
@@ -92,45 +92,44 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
             float3 sampleNormal = NormalMap[samplePos].xyz;
             float3 samplePosWorld = WorldPosMap[samplePos].xyz;
 
-            // 1. 空間權重 (Gaussian-like)
+            // 1. 空間重み (Gaussian-like)
             float spatialWeight = exp(-(x * x + y * y) / 2.0f);
 
-            // 2. 法線權重 (★ 根據 stepSize 放寬限制，避免在大 Pass 時產生馬賽克)
+            // 2. 法線重み (★ stepSize に応じて制限を緩め、大きい Pass 時のモザイクを回避)
             float normalPower = clamp(128.0f / (float) (stepSize * stepSize), 2.0f, 128.0f);
             float normalWeight = pow(max(0.0f, dot(centerNormal, sampleNormal)), normalPower);
 
-            // 3. 平面深度權重 (★ 根據 stepSize 放寬，容忍曲面誤差)
+            // 3. 平面深度重み (★ stepSize に応じて緩め、曲面誤差を許容)
             float planeDist = abs(dot(centerNormal, centerPos - samplePosWorld));
             float posWeight = exp(-planeDist / (0.01f * stepSize + 0.001f));
 
             // ==========================================
-            // 4. Diffuse 動態亮度權重 (SVGF 的靈魂)
+            // 4. Diffuse 動的輝度重み (SVGF の核心)
             // ==========================================
             float sampleLumaDiff = dot(sampleDiff.rgb, LUMINANCE_VECTOR);
-            // 差距 / (標準差 * 敏感度)。標準差越大，指數越趨近 0，exp(0) = 1 (強制模糊！)
-            float lumaWeightDiff = exp(-abs(centerLumaDiff - sampleLumaDiff) / (stdDevDiff * 4.0f + 0.001f));
+            // 暗部対応: 分母に「信号強度に比例する下限」を追加。
+            // 暗部 (center/sample luma が小さい) では σ も小さいので、絶対差分ベースの
+            // 重みだと鄰近を過度に拒絶してノイズが残る。相対スケールを導入して救済。
+            float lumaScale = max(centerLumaDiff, sampleLumaDiff) * 0.5f;
+            float lumaWeightDiff = exp(-abs(centerLumaDiff - sampleLumaDiff) / (stdDevDiff * 8.0f + lumaScale + 0.1f));
             
             float diffW = spatialWeight * normalWeight * posWeight * lumaWeightDiff;
             sumDiffuse += sampleDiff * diffW;
             sumWeightDiffuse += diffW;
 
             // ==========================================
-            // 5. Specular 權重 (受 Roughness 與 Specular 方差引導)
+            // 5. Specular 重み (Roughness と Specular 分散に誘導される)
             // ==========================================
             float sampleLumaSpec = dot(sampleSpec.rgb, LUMINANCE_VECTOR);
-            float lumaWeightSpec = exp(-abs(centerLumaSpec - sampleLumaSpec) / (stdDevSpec * 4.0f + 0.001f));
-            
-            // 粗糙度越低，Specular 越像鏡面，空間擴散必須越小以保留清晰反射
-            float roughnessWeight = exp(-(x * x + y * y) / max(centerRoughness * centerRoughness * 2.0f, 0.05f));
-            
-            // 額外防護機制：
-            // 如果表面極度光滑 (Roughness < 0.1f)，它應該表現得像鏡子。
-            // 這時我們強制削弱所有非中心點 (x!=0 或 y!=0) 的權重貢獻，避免周圍像素污染高光反射。
-            if (centerRoughness < 0.1f && (x != 0 || y != 0))
-            {
-                roughnessWeight *= 0.05f; // 強力截斷
-            }
-            
+            float lumaScaleSpec = max(centerLumaSpec, sampleLumaSpec) * 0.5f;
+            float lumaWeightSpec = exp(-abs(centerLumaSpec - sampleLumaSpec) / (stdDevSpec * 8.0f + lumaScaleSpec + 0.1f));
+
+            // Specular カーネル: 純 roughness 基準で安定化。
+            // σ に依存させるとフレーム毎にカーネルが変化し、時間的なちらつき (跳動) を誘発。
+            // 鏡面/屈折の噪声は時間積分 (TemporalAccumulation) に委ねる。
+            float specKernelScale = max(centerRoughness * centerRoughness * 2.0f, 0.05f);
+            float roughnessWeight = exp(-(x * x + y * y) / specKernelScale);
+
             float specW = spatialWeight * normalWeight * posWeight * lumaWeightSpec * roughnessWeight;
             sumSpecular += sampleSpec * specW;
             sumWeightSpecular += specW;
@@ -142,19 +141,19 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
 
     if (isLastPass == 1)
     {
-        // 恢復 Albedo (Remodulation)
+        // Albedo を復元 (Remodulation)
         finalDiffuse.rgb *= centerAlbedo;
         
 
-        // 高光重調變 (Inverse Tonemap)
-        // 將被壓制的能量還原，確保 PBR 金屬反射依舊閃耀
-        // 限制亮度最高為 0.99f 以避免除以零
+        // ハイライト逆変調 (Inverse Tonemap)
+        // 抑制されたエネルギーを復元し、PBR 金属反射が依然として輝くことを保証
+        // ゼロ除算を防ぐため輝度の最大値を 0.99f に制限
         float fSpecLuma = clamp(dot(finalSpecular.rgb, LUMINANCE_VECTOR), 0.0f, 0.99f);
         finalSpecular.rgb /= (1.0f - fSpecLuma);
         
         float3 combined = finalDiffuse.rgb + finalSpecular.rgb;
 
-        // ToneMapping 與 Gamma 校正
+        // トーンマッピングとガンマ補正
         combined = combined / (combined + float3(1.0f, 1.0f, 1.0f));
         combined = pow(combined, float3(1.0f / 2.2f, 1.0f / 2.2f, 1.0f / 2.2f));
 
